@@ -20,6 +20,8 @@ Acceptance covered by current tests: per-bot close ownership, same-venue multipl
 
 The browser/API supports bot parameter editing and confirmed deletion. Entry bindings stay fixed after execution; confirmed holding bots can adjust close slippage. Editing entry parameters stops condition monitoring until explicit restart. Deletion is blocked by owned inventory or unresolved journals and retains historical rows. Both create/edit and account onboarding validate names before submission and reuse a single form per page.
 
+Lighter zero fees are verified against authenticated native trades for the exact account, client identity and order. Complete cumulative size/notional evidence is required. Native omitted zero fee fields are interpreted according to the official Trade JSON contract. Fee-read failure keeps fees unknown while preserving confirmed quantity and price. Later evidence may enrich only a previously unknown fee, without replaying inventory or altering terminal fill evidence.
+
 Funding cards read Arcus market metadata and short, read-only Lighter market_stats subscriptions, caching for 30 seconds. Both display native hourly estimates separately from last settlement rates, with explicit unavailability. Funding is still excluded from actual bot PnL until payment attribution is implemented.
 
 ## Next acceptance step
@@ -29,7 +31,7 @@ Connect user-owned accounts through the application and verify private identity,
 ## Remaining modules
 
 - Long-range paginated native history and WebSocket reconciliation.
-- Lighter trade fee collection, actual funding payment attribution and official points.
+- Lighter nonzero fee monetary accounting, actual funding payment attribution and official points.
 - Additional exchange account/execution adapters.
 - Grid/scalping: define their actual rules before implementing.
 - Security/access design after the main flows, without preselecting passwords or Basic Auth.

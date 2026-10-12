@@ -16,6 +16,7 @@ Updated 2026-10-12 (Asia/Shanghai). The application now uses native exchange acc
 - Official hourly funding forecasts, last settlement rates, next payment times and payment directions for all three supported profiles. Missing data stays unavailable; funding attribution to actual bot PnL remains separate.
 - Account-name inline validation, one persistent account form per page and duplicate-verification prevention.
 - Bounded original-order confirmation polling after transient network/HTTP errors or incomplete reads; no order resubmission. Permanent identity errors remain unknown and stop the peer leg. Operation diagnostics survive background synchronization.
+- Lighter zero trading fees are confirmed from authenticated, exact-order trade rows and native zero-field omission rules. Missing fees can be enriched later without reapplying fills or changing inventory. Optional fee reads do not block confirmed-fill recognition.
 - Persistent Bot cards and alert rows: periodic updates change text and visibility in place, preserving form drafts and Telegram settings. Unmatched allocated legs are highlighted.
 - Actual account snapshots, stale/unavailable states, price PnL, explicit missing fees/funding/points, alerts and optional Telegram.
 - Native database schema 2 in app.live.db. Prior records in app.db are preserved and are not treated as native evidence.
@@ -24,7 +25,7 @@ Updated 2026-10-12 (Asia/Shanghai). The application now uses native exchange acc
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- Fifty-one automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- Sixty-two automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
@@ -40,7 +41,7 @@ A user-controlled entry revealed a first-leg confirmation failure, followed by l
 
 - Actual private-account and funded-order acceptance for each supported profile.
 - Complete long-range paginated order/fill history and WebSocket reconciliation.
-- Official points and bot-specific funding attribution; Lighter actual fee collection.
+- Official points and bot-specific funding attribution; Lighter nonzero fee monetary accounting.
 - Hyperliquid/Binance native accounts and orders; additional venues.
 - Grid/scalping specification and implementation.
 - Security/login design and release packaging validation on additional platforms.

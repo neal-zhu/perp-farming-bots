@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import lighter
@@ -329,12 +329,13 @@ class Lighter(Adapter):
 
     async def lookup(self, intent: OrderIntent, native_id: str | None) -> OrderResult:
         spec = await self.markets.spec(self.value.provider, intent.symbol)
+        token = await self.auth()
         r = await self.markets.request(
             self.value.provider,
             "GET",
             "/api/v1/accountInactiveOrders",
             params={"account_index": self.value.account_index, "market_id": spec.market_id, "limit": 100},
-            headers={"authorization": await self.auth()},
+            headers={"authorization": token},
         )
         matches = [o for o in r["orders"] if o["client_order_index"] == int(intent.client_id)]
         if len(matches) != 1:
@@ -352,13 +353,77 @@ class Lighter(Adapter):
             return self.unknown(o["order_id"])
         quantity = Decimal(o["filled_base_amount"])
         price = Decimal(o["filled_quote_amount"]) / quantity if quantity > 0 else None
+        fee = Decimal(0) if quantity == 0 else None
+        if quantity > 0:
+            try:
+                fee = await asyncio.wait_for(self.zero_fee_evidence(intent, o, token), timeout=3)
+            except (ValueError, KeyError, TypeError, InvalidOperation, TimeoutError):
+                # Missing fee evidence must not hide an already confirmed fill
+                # or prevent its peer from executing. Fees can be enriched later.
+                pass
         return OrderResult(
             status="filled" if status == "filled" else "canceled",
             quantity=quantity,
             average_price=price,
-            fee=None if quantity > 0 else Decimal(0),
+            fee=fee,
             native_id=o["order_id"],
         )
+
+    async def zero_fee_evidence(
+        self, intent: OrderIntent, order: dict[str, Any], token: str
+    ) -> Decimal | None:
+        response = await self.markets.request(
+            self.value.provider,
+            "GET",
+            "/api/v1/trades",
+            params={
+                "market_id": order["market_index"],
+                "account_index": self.value.account_index,
+                "order_index_str": order["order_id"],
+                "sort_by": "timestamp",
+                "limit": 100,
+            },
+            headers={"authorization": token},
+        )
+        quantity, notional = Decimal(0), Decimal(0)
+        seen: set[int] = set()
+        side = "ask" if intent.side == "sell" else "bid"
+        for trade in response["trades"]:
+            if (
+                trade["type"] != "trade"
+                or trade["market_id"] != order["market_index"]
+                or str(trade[f"{side}_id"]) != order["order_id"]
+                or str(trade[f"{side}_client_id"]) != intent.client_id
+                or trade[f"{side}_account_id"] != self.value.account_index
+                or trade["trade_id"] in seen
+                or type(trade["is_maker_ask"]) is not bool
+            ):
+                return None
+            seen.add(trade["trade_id"])
+            is_maker = trade["is_maker_ask"] == (side == "ask")
+            role = "maker" if is_maker else "taker"
+            # Official Trade JSON uses omitempty for zero fees. This is a
+            # documented native zero, not a default for an absent trade/read.
+            fee_field = f"{role}_fee"
+            if fee_field in trade and (type(trade[fee_field]) is not int or trade[fee_field] != 0):
+                return None  # Nonzero fee monetary accounting remains unimplemented.
+            integrator_field = f"integrator_{role}_fee"
+            if integrator_field in trade and (
+                type(trade[integrator_field]) is not int or trade[integrator_field] != 0
+            ):
+                return None
+            size, amount = Decimal(trade["size"]), Decimal(trade["usd_amount"])
+            if not size.is_finite() or not amount.is_finite() or size <= 0 or amount <= 0:
+                return None
+            quantity += size
+            notional += amount
+        if (
+            seen
+            and quantity == Decimal(order["filled_base_amount"])
+            and notional == Decimal(order["filled_quote_amount"])
+        ):
+            return Decimal(0)
+        return None
 
 
 class Accounts:

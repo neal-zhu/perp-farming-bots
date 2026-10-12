@@ -149,6 +149,7 @@ async def test_invalid_native_identity_stays_unknown_and_preserves_diagnostic_af
     assert not await runtime.try_open(bot.id)
     assert count == 1 and len(adapter.sent) == 1
     assert runtime.accounts.adapter(b.id).sent == []
+
     assert "订单身份" in store.bot(bot.id).reason
     from perp_farming_bots.store import operations
 
@@ -159,6 +160,35 @@ async def test_invalid_native_identity_stays_unknown_and_preserves_diagnostic_af
     assert store.rows(operations, bot.id)[0]["message"] == message
     assert "单腿持仓" in store.bot(bot.id).reason
     assert runtime.accounts.adapter(b.id).sent == []
+
+
+async def test_later_fee_evidence_enriches_fill_without_reapplying_inventory(env, monkeypatch):
+    store, runtime, a, b = env
+    adapter = runtime.accounts.adapter(b.id)
+    original = adapter.lookup
+
+    async def unknown_fee(intent, native_id):
+        return (await original(intent, native_id)).model_copy(update={"fee": None})
+
+    monkeypatch.setattr(adapter, "lookup", unknown_fee)
+    bot = await open_bot(store, runtime, a, b)
+    positions_before = [(p.role, p.quantity) for p in store.positions(bot.id)]
+    assert (await runtime.pnl(bot.id))["fees"] is None
+    native = next(iter(adapter.results.values()))
+    adapter.results[next(iter(adapter.results))] = native.model_copy(update={"fee": Decimal(0)})
+    monkeypatch.setattr(adapter, "lookup", original)
+    await runtime.refresh_fees(bot.id)
+    await runtime.refresh_fees(bot.id)
+    assert (await runtime.pnl(bot.id))["fees"] == "1"
+    assert [(p.role, p.quantity) for p in store.positions(bot.id)] == positions_before
+    assert len(adapter.sent) == 1
+    assert len(store.rows(fills, bot.id)) == 2
+    order = next(o for o in store.bot_orders(bot.id) if o["role"] == "short")
+    from perp_farming_bots.models import OrderResult
+
+    zero = OrderResult.model_validate(order["result"])
+    with pytest.raises(ValueError, match="手续费证据发生变化"):
+        store.apply_order_result(order["id"], zero.model_copy(update={"fee": Decimal("5")}))
 
 
 async def test_lost_send_ack_queries_original_without_duplicate_submission(env):

@@ -461,8 +461,25 @@ class Store:
         with self.transaction() as db:
             row = dict(db.execute(select(orders).where(orders.c.id == order_id)).mappings().one())
             if row["applied"]:
-                if json.loads(row["result"]) != result.model_dump(mode="json"):
+                previous = OrderResult.model_validate_json(row["result"])
+                if previous.model_dump(exclude={"fee"}) != result.model_dump(exclude={"fee"}):
                     raise ValueError("订单终态证据发生变化，需要人工核实")
+                if previous.fee is None and result.fee is not None:
+                    db.execute(
+                        update(orders)
+                        .where(orders.c.id == order_id)
+                        .values(result=result.model_dump_json(), updated_at=time.time())
+                    )
+                    db.execute(update(fills).where(fills.c.id == order_id).values(fee=str(result.fee)))
+                    intent = OrderIntent.model_validate_json(row["intent"])
+                    if not intent.reduce_only:
+                        db.execute(
+                            update(positions)
+                            .where((positions.c.bot_id == row["bot_id"]) & (positions.c.role == row["role"]))
+                            .values(opening_fee=str(result.fee))
+                        )
+                elif previous.fee is not None and result.fee != previous.fee:
+                    raise ValueError("已确认手续费证据发生变化，需要人工核实")
                 return
             intent = OrderIntent.model_validate_json(row["intent"])
             quantity, price = result.quantity, result.average_price

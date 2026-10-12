@@ -26,6 +26,8 @@ The pinned [official Python SDK](https://github.com/elliottech/lighter-python/tr
 
 The application reads nextNonce for the exact account/key, signs a LIMIT IOC with expiry 0, and sends once. Terminal native order fields filled_base_amount and filled_quote_amount establish actual fill quantity and average price. A transaction hash does not establish an order fill. Missing actual fee history is reported as unknown.
 
+The official [fee schedule](https://docs.lighter.xyz/trading/trading-fees.md) states Standard accounts have zero maker/taker trading fees; Plus/Premium schedules differ. The [authenticated trades endpoint](https://apidocs.lighter.xyz/reference/trades) supports exact order_index_str filtering. Official [Trade JSON](https://apidocs.lighter.xyz/docs/websocket-reference) documents zero fee omission. The application verifies the queried side's account/order/client identity, unique trade IDs and full cumulative quantity/notional before recording zero. It selects the queried participant's maker/taker fee, not the counterparty's fee. Nonzero fee rates remain unknown until monetary accounting is verified. A read-only check of a user-controlled RH fill confirmed zero using these rules; no trade was submitted by the agent.
+
 Native signer selection is serialized and re-created for each use so equal account/key indices across deployments cannot share an accidentally selected signing domain. No builder/integrator parameters are enabled; pinned signer defaults are zero.
 
 ## TLS and scope

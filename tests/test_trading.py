@@ -203,6 +203,116 @@ async def test_lighter_terminal_lookup_keeps_unknown_fees_explicit():
     await markets.close()
 
 
+@pytest.mark.parametrize("is_maker,explicit_zero", [(False, False), (False, True), (True, False)])
+async def test_lighter_confirmed_zero_fee_trades(monkeypatch, is_maker, explicit_zero):
+    markets = FixtureMarkets()
+    order = {
+        "client_order_index": 456,
+        "owner_account_index": 123,
+        "market_index": 1,
+        "is_ask": True,
+        "initial_base_amount": "0.002",
+        "status": "canceled",
+        "filled_base_amount": "0.001",
+        "filled_quote_amount": "60",
+        "order_id": "789",
+    }
+    trade = {
+        "trade_id": 1,
+        "type": "trade",
+        "market_id": 1,
+        "ask_id": 789,
+        "ask_client_id": 456,
+        "ask_account_id": 123,
+        "is_maker_ask": is_maker,
+        "size": "0.001",
+        "usd_amount": "60",
+    }
+    role = "maker" if is_maker else "taker"
+    if explicit_zero:
+        trade[role + "_fee"] = 0
+    # A nonzero fee charged to the other participant is not our account's fee.
+    trade[("taker" if is_maker else "maker") + "_fee"] = 28
+    markets.request = AsyncMock(side_effect=[{"orders": [order]}, {"trades": [trade]}])
+    adapter = Lighter(
+        ConnectionCreate(
+            name="account",
+            provider=Provider.LIGHTER_RH,
+            account_index=123,
+            api_key_index=4,
+            api_private_key=SecretStr("33" * 32),
+        ),
+        markets,
+    )
+    adapter.auth = AsyncMock(return_value="test-token")
+    result = await adapter.lookup(intent(client_id="456", side="sell"), "789")
+    assert result.quantity == Decimal("0.001") and result.fee == Decimal(0)
+    assert markets.request.call_args.kwargs["params"]["order_index_str"] == "789"
+    await markets.close()
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "wrong-order", "incomplete", "nonzero", "null", "network", "timeout"]
+)
+async def test_lighter_fee_read_failure_or_incomplete_evidence_does_not_hide_fill(change):
+    markets = FixtureMarkets()
+    order = {
+        "client_order_index": 456,
+        "owner_account_index": 123,
+        "market_index": 1,
+        "is_ask": True,
+        "initial_base_amount": "0.002",
+        "status": "canceled",
+        "filled_base_amount": "0.001",
+        "filled_quote_amount": "60",
+        "order_id": "789",
+    }
+    trade = {
+        "trade_id": 1,
+        "type": "trade",
+        "market_id": 1,
+        "ask_id": 789,
+        "ask_client_id": 456,
+        "ask_account_id": 123,
+        "is_maker_ask": False,
+        "size": "0.001",
+        "usd_amount": "60",
+    }
+    if change == "wrong-order":
+        trade["ask_id"] = 790
+    if change == "incomplete":
+        trade["size"] = "0.0005"
+    if change == "nonzero":
+        trade["taker_fee"] = 280
+    if change == "null":
+        trade["taker_fee"] = None
+    evidence = {"trades": [] if change == "missing" else [trade]}
+    fee_read = (
+        ValueError("Fee read failed")
+        if change == "network"
+        else TimeoutError("Fee read timeout")
+        if change == "timeout"
+        else evidence
+    )
+    markets.request = AsyncMock(side_effect=[{"orders": [order]}, fee_read])
+    adapter = Lighter(
+        ConnectionCreate(
+            name="account",
+            provider=Provider.LIGHTER_RH,
+            account_index=123,
+            api_key_index=4,
+            api_private_key=SecretStr("33" * 32),
+        ),
+        markets,
+    )
+    adapter.auth = AsyncMock(return_value="test-token")
+    result = await adapter.lookup(intent(client_id="456", side="sell"), "789")
+    assert result.status == "canceled"
+    assert result.quantity == Decimal("0.001") and result.average_price == Decimal("60000")
+    assert result.fee is None
+    await markets.close()
+
+
 async def test_lighter_send_uses_official_form_encoded_fields():
     markets = FixtureMarkets()
     markets.request = AsyncMock(return_value={"code": 200, "tx_hash": "hash"})

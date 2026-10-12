@@ -97,6 +97,8 @@ class Runtime:
                             await self.accounts.refresh(account.id)
                         except ValueError as exc:
                             self.store.alert(f"{account.name}：{exc}", severity="warning")
+                    for bot in self.store.bots():
+                        await self.refresh_fees(bot.id)
                     refreshed = time.time()
                 for bot in self.store.bots():
                     try:
@@ -133,6 +135,26 @@ class Runtime:
             "short": short.model_dump(mode="json"),
             "net_receipt_rate_pct": net,
         }
+
+    async def refresh_fees(self, bot_id: str) -> None:
+        async with self.guard:
+            for order in self.store.bot_orders(bot_id):
+                result = order["result"]
+                if not order["applied"] or result is None or result["fee"] is not None:
+                    continue
+                if result["quantity"] is None or Decimal(result["quantity"]) <= 0:
+                    continue
+                try:
+                    refreshed = await self.accounts.adapter(order["connection_id"]).lookup(
+                        OrderIntent.model_validate(order["intent"]), order["native_id"]
+                    )
+                except Exception:
+                    continue  # A failed fee read never changes the confirmed fill.
+                if refreshed.status != "unknown" and refreshed.fee is not None:
+                    try:
+                        self.store.apply_order_result(order["id"], refreshed)
+                    except ValueError as exc:
+                        self.store.alert(str(exc), bot_id, "warning")
 
     async def preview(self, value: BotCreate | BotUpdate | Bot) -> Preview:
         p = value.parameters
