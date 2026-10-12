@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "perp-farming-bots"
+version = "0.1.0"
+description = "Self-hosted perpetual strategy bots with transparent paper execution"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+dependencies = [
+  "nicegui>=3.0,<4",
+  "sqlalchemy>=2.0,<3",
+  "httpx>=0.28,<1",
+  "cryptography>=45,<47",
+  "ccxt>=4.5,<5",
+  "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git@04bee9ba9811b87ef1cccc568e7f590b5fe649bb",
+]
+
+[project.scripts]
+perp-farming-bots = "perp_farming_bots.app:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=1,<2", "ruff>=0.12", "mypy>=1.16"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/perp_farming_bots"]
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/perp_farming_bots"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

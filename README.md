@@ -2,7 +2,50 @@
 
 独立、开源、自托管的永续交易策略工具，面向会使用交易所和钱包、但不会编程的用户。内置策略逐步涵盖跨交易所对冲、网格和剥头皮等 perp farming bots。
 
-**当前状态：设计阶段。此仓库尚无可运行的交易程序。**
+**当前状态：可运行的模拟交易 MVP。真实订单提交尚未实现。**
+
+已实现账户实例管理、策略库、创建多个 Bot、价差条件监测、模拟建仓/平仓、暂停/停止/恢复、独立持仓分配、成交记录、模拟盈亏、站内告警和可选 Telegram 通知。同一场馆可以添加多个模拟账户实例并互相对冲。
+
+行情来源可明确选择虚构演示、Lighter Core / Robinhood 官方 SDK、Hyperliquid / Binance CCXT 公共盘口。公共接入在网络错误时明确不可用，不切换成虚构行情。此开发环境的公共场馆验证受到 TLS/网络限制，未完成这些场馆的连通验收。Arcus 接入、官方积分、真实账户私有读取、实盘执行、网格和剥头皮仍未实现。
+
+## 启动
+
+需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)，或 Docker Compose。所有首次生成数据和密码保存在本机，不进入 Git。
+
+```bash
+uv sync --frozen
+uv run perp-farming-bots
+```
+
+打开 `http://127.0.0.1:8080`，用户名 `admin`。首次密码在 `data/admin-password.txt` 中。页面先点击“创建演示账户”，再“创建 Bot”，预览、保存并启动，可跑通虚构行情的模拟开仓和平仓。可以独立创建多个账户和多个 Bot。
+
+```bash
+docker compose up --build -d
+docker compose exec app cat /app/data/admin-password.txt
+```
+
+Docker 默认只向本机暴露端口，数据放在命名 volume。`docker compose down` 保留数据；不要用 `down -v` 删除需要保留的记录。当前容器验证目标为本开发机的 Linux ARM64；其他架构尚未单独验证。
+
+可通过环境变量设置 `PFB_ADMIN_PASSWORD`（至少 12 字符）、`PFB_HOST`、`PFB_PORT`、`PFB_DATA_DIR`、`PFB_TIMEZONE`（默认 Asia/Shanghai）。`.env.example` 是变量参考；本地可使用 `uv run --env-file .env perp-farming-bots` 显式加载自己的配置。远程访问应配置 HTTPS；当前内置 Basic Auth 覆盖 HTTP 和 WebSocket，普通 HTTP 不能保护网络传输的密码。
+
+## 当前模拟行为
+
+- 每个账户使用自设模拟资金和费率，按 1× 名义敞口预留。不是原生余额、保证金或官方费率。
+- 对冲以两条腿实际模拟数量分配到 Bot；两个同向 Bot 可共用账户，关闭其中一个不减少另一个。
+- 只开放同一账户合约的单方向库存；相反方向需要不同账户实例。
+- 公开盘口按模拟 USD 面值假设计价，不处理真实 USDG/USDC/USDT 换汇、资金费或真实成交滑点。
+- 模拟双腿成交和持仓在 SQLite 同一事务写入。这不代表真实场馆的双腿原子性或订单恢复已经实现。
+- 暂停/停止保留持仓；停止并平仓只处理当前 Bot。已有持仓不会自动重新开仓。
+- 官方积分和资金费显示“不可用/未模拟”，不当作已知零值或纳入完整收益。
+
+## 开发检查
+
+```bash
+make check
+make test
+```
+
+测试覆盖同场馆多账户、多 Bot 独立关闭、资金占用、创建幂等、过期行情、重启、HTTP/实时认证与密钥加密。CI 使用锁定依赖运行相同检查。
 
 用户在自己的机器或服务器运行程序，通过浏览器连接账户、选择策略、填写少量参数并启动 bot。可以同时运行多个 bot，查看各自订单、持仓、成交、费用、资金费、盈亏和告警；各平台积分按账户展示。
 
@@ -22,13 +65,13 @@
 
 - Python 3.12、asyncio：后台执行与账户连接。
 - NiceGUI / FastAPI：浏览器界面与本地接口，一个运行进程。
-- SQLAlchemy / Alembic / SQLite：交易操作、成交分配和重启恢复。
+- SQLAlchemy / SQLite：当前使用版本 1 schema；Alembic 是后续 schema 升级时的计划。
 - Lighter 官方 Python SDK：优先接入 Lighter Robinhood 与 Core。
 - CCXT / CCXT Pro：经过验收的其他交易所连接。
 - Arcus：单独开发永续 adapter；已找到的官方 spot SDK 不承担永续下单。
 - Docker Compose：单容器自托管发行；依赖固定版本和哈希。
 
-以上是选型，不表示已安装依赖、已实现连接或通过实盘验收。
+依赖已通过 uv.lock 固定；第三方能力是否可用以运行结果和后续接入验收为准，不表示通过实盘验收。
 
 ## 设计资料
 

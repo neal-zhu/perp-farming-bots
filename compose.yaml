@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - bot-data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  bot-data:

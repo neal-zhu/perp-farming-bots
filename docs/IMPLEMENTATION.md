@@ -1,6 +1,10 @@
 # Implementation slices and acceptance
 
-Status: proposed; no slice has been implemented. Scope is Perp Farming Bots, a single-owner self-hosted application with built-in trading strategies. The first delivered strategy is spread hedging; estimates in DESIGN.md cover that strategy and do not include unspecified grid/scalping implementation.
+Status: in progress. The runnable paper MVP implements the main UI, account-instance bindings, multiple bots, paper entry/close, persistence, PnL, alerts and optional Telegram. Public SDK/CCXT read paths exist but connectivity was not verified successfully from this environment (TLS/network errors). Live execution, native private accounts, Arcus, official points and other strategies remain unimplemented. Scope is Perp Farming Bots, a single-owner self-hosted application; the first strategy is spread hedging.
+
+User priority: finish the main product before optimizing performance or pursuing exhaustive reliability. Use simple single-process code and ordinary transactions. Keep essential truth/ownership constraints. Current paper execution is atomic locally; the proposed real-order recovery slices below are future work, not existing guarantees.
+
+Account-instance requirement: multiple accounts on the same venue are allowed, including two Arcus accounts forming a pair once Arcus execution is implemented. Bind by connection ID and native account identity, never by venue name alone.
 
 ## Slice 1 — Runnable read-only application
 

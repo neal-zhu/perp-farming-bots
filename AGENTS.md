@@ -17,6 +17,12 @@
 - Model bot instances, strategy-owned state, allocated inventory, orders and execution operations explicitly. Shared execution must support one or multiple legs without making every action a paired hedge.
 - Future grid and scalping rules require explicit product specifications; do not invent or enable them because their names appear in documentation.
 - Pause, stop, cancel outstanding orders and close allocated inventory are distinct user actions. No account-wide close-all to stop one bot.
+- Bind bots to connection/account instance IDs, not exchange names. Multiple accounts on one venue may form a pair; an API-key change is not a new native account.
+
+## Delivery priority
+
+- Prioritize a working product and simple implementation. Avoid premature performance tuning, complex distributed infrastructure, or exhaustive reliability mechanisms.
+- Keep essential correctness: explicit unknowns, account/strategy ownership, accurate execution labels, and no unjournaled real orders. Fast delivery is not permission to present simulated or unverified behavior as live execution.
 
 ## Trading authority
 
