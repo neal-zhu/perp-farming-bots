@@ -150,3 +150,48 @@ def test_bot_card_explains_funding_payment_directions(bot_page):
     assert "+0.001200% / 1小时 · 预计支付" in labels
     assert "+0.001200% / 1小时 · 预计收取" in labels
     assert any("实际资金费尚未计入 Bot 盈亏" in s for s in labels)
+
+
+async def test_periodic_updates_preserve_bot_card_nodes_and_unsaved_form(bot_page):
+    button = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "修改参数")
+    click(bot_page, "修改参数")
+    name = next(e for e in bot_page.elements.values() if isinstance(e, ui.input) and e.label == "Bot 名称 *")
+    name.set_value("尚未保存的名称")
+    with bot_page:
+        await bot_page.test_refresh()
+        await bot_page.test_refresh()
+    assert button.id in bot_page.elements, "periodic polling must update values without replacing the card"
+    assert name.id in bot_page.elements and name.value == "尚未保存的名称"
+
+
+async def test_periodic_updates_change_status_values_in_place(bot_page, configured_bot, env):
+    store, _, _, _ = env
+    old_ids = set(bot_page.elements)
+    badge = next(e for e in bot_page.elements.values() if isinstance(e, ui.badge) and e.text == "待启动")
+    store.set_state(configured_bot.id, BotState.WAITING, "正在等条件")
+    with bot_page:
+        await bot_page.test_refresh()
+    assert set(bot_page.elements) == old_ids
+    assert badge.text == "等待价差"
+    start = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "启动")
+    pause = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "暂停")
+    assert not start.visible and pause.visible
+
+
+async def test_alert_polling_keeps_telegram_draft_and_existing_alert_nodes(bot_page, env):
+    store, _, _, _ = env
+    tabs = next(e for e in bot_page.elements.values() if isinstance(e, ui.tabs))
+    alert_tab = next(e for e in bot_page.elements.values() if isinstance(e, ui.tab) and e.label == "通知")
+    tabs.set_value(alert_tab)
+    token = next(e for e in bot_page.elements.values() if isinstance(e, ui.input) and e.label == "Bot Token")
+    token.set_value("unsaved-test-draft")
+    store.alert("测试通知")
+    with bot_page:
+        await bot_page.test_refresh()
+    alert_label = next(
+        e for e in bot_page.elements.values() if isinstance(e, ui.label) and e.text == "测试通知"
+    )
+    with bot_page:
+        await bot_page.test_refresh()
+    assert alert_label.id in bot_page.elements
+    assert token.id in bot_page.elements and token.value == "unsaved-test-draft"

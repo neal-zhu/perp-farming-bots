@@ -17,11 +17,20 @@ async def page(env, monkeypatch):
     monkeypatch.setattr(core, "loop", asyncio.get_running_loop())
     store, runtime, _, _ = env
     notifications = Notifications(store, runtime.accounts.secrets)
+    timer_factory = ui.timer
+    refresh_callbacks = []
+
+    def timer(interval, callback, **kwargs):
+        refresh_callbacks.append(callback)
+        return timer_factory(interval, callback, **kwargs)
+
+    monkeypatch.setattr(ui, "timer", timer)
     install_ui(store, runtime, notifications)
     home = [f for f, path in Client.page_routes.items() if path == "/"][-1]
     client = Client(ui.page("/form-test"))
     with client:
         await home()
+    client.test_refresh = refresh_callbacks[-1]
     yield client
     client.delete()
     Client.page_routes.pop(home, None)

@@ -14,6 +14,8 @@ Closing is a separate user action. It checks original order uncertainty and actu
 
 Restart and synchronization query original identities without reissuing requests or automatically submitting a missed second leg. Recent-history lookup can remain unknown when evidence has aged out; this is explicit, not assumed rejection or zero fill.
 
+Order confirmation retries transient native reads within the existing bounded polling loop rather than aborting at the first query exception. Invalid identity remains a permanent stop. Query failure causes are retained in operation history; synchronization updates the current exposure description without erasing the original diagnostic. The UI retains per-bot elements and updates values/visibility in place; creation and deletion alone change the card list. Alert polling preserves notification-setting drafts.
+
 Acceptance covered by current tests: per-bot close ownership, same-venue multiple accounts, creation idempotency, original-order lookup after lost ACK, first/peer/close partial fills, no blind repeat, stale quotes and external-inventory blocking. Production credentials and real funded orders have not been used for acceptance yet.
 
 The browser/API supports bot parameter editing and confirmed deletion. Entry bindings stay fixed after execution; confirmed holding bots can adjust close slippage. Editing entry parameters stops condition monitoring until explicit restart. Deletion is blocked by owned inventory or unresolved journals and retains historical rows. Both create/edit and account onboarding validate names before submission and reuse a single form per page.

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import httpx
 import pytest
 from conftest import connection_value
 from pydantic import ValidationError
@@ -84,6 +85,79 @@ async def test_unknown_first_order_does_not_send_peer_or_retry(env):
     await runtime.sync(bot.id)
     assert len(store.positions(bot.id)) == 1
     assert len(store.rows(fills, bot.id)) == 1
+    assert runtime.accounts.adapter(b.id).sent == []
+
+
+async def test_transient_order_lookup_error_does_not_abandon_confirmed_first_leg(env, monkeypatch):
+    store, runtime, a, b = env
+    adapter = runtime.accounts.adapter(a.id)
+    original_lookup = adapter.lookup
+    lookups = 0
+    await runtime.markets.http.aclose()
+    runtime.markets.http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(404, json={"error": "not indexed yet"}))
+    )
+
+    async def lookup(intent, native_id):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 1:
+            await runtime.markets.request(a.provider, "GET", "/v1/order/test-order")
+        return await original_lookup(intent, native_id)
+
+    monkeypatch.setattr(adapter, "lookup", lookup)
+    bot = make_bot(store, a, b)
+    await runtime.command(bot.id, "start")
+    assert await runtime.try_open(bot.id), "temporary first-leg lookup error must not create a single-leg bot"
+    assert len(store.positions(bot.id)) == 2
+    assert len(adapter.sent) == len(runtime.accounts.adapter(b.id).sent) == 1
+
+
+async def test_incomplete_first_read_can_be_confirmed_without_another_send(env, monkeypatch):
+    store, runtime, a, b = env
+    adapter = runtime.accounts.adapter(a.id)
+    original_lookup = adapter.lookup
+    count = 0
+
+    async def lookup(intent, native_id):
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise KeyError("remainingSize")
+        return await original_lookup(intent, native_id)
+
+    monkeypatch.setattr(adapter, "lookup", lookup)
+    bot = await open_bot(store, runtime, a, b)
+    assert bot.state == BotState.HOLDING
+    assert count == 2 and len(adapter.sent) == 1
+
+
+async def test_invalid_native_identity_stays_unknown_and_preserves_diagnostic_after_sync(env, monkeypatch):
+    store, runtime, a, b = env
+    adapter = runtime.accounts.adapter(a.id)
+    original_lookup = adapter.lookup
+    count = 0
+
+    async def lookup(intent, native_id):
+        nonlocal count
+        count += 1
+        raise ValueError("Arcus 订单身份与本地提交不符")
+
+    monkeypatch.setattr(adapter, "lookup", lookup)
+    bot = make_bot(store, a, b)
+    await runtime.command(bot.id, "start")
+    assert not await runtime.try_open(bot.id)
+    assert count == 1 and len(adapter.sent) == 1
+    assert runtime.accounts.adapter(b.id).sent == []
+    assert "订单身份" in store.bot(bot.id).reason
+    from perp_farming_bots.store import operations
+
+    message = store.rows(operations, bot.id)[0]["message"]
+    monkeypatch.setattr(adapter, "lookup", original_lookup)
+    await runtime.sync(bot.id)
+    await runtime.sync(bot.id)
+    assert store.rows(operations, bot.id)[0]["message"] == message
+    assert "单腿持仓" in store.bot(bot.id).reason
     assert runtime.accounts.adapter(b.id).sent == []
 
 

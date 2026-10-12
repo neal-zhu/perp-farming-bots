@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-import os
+import asyncio
 import re
 import uuid
-from datetime import datetime
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from nicegui import ui
 from nicegui.elements.mixins.disableable_element import DisableableElement
 from pydantic import SecretStr, ValidationError
 
+from .bot_widgets import AlertFeed, BotCard
+from .formatting import money, stamp
 from .models import (
     PROVIDER_NAMES,
-    STATE_NAMES,
     STRATEGIES,
     TRADING_PROVIDERS,
     BotCreate,
-    BotState,
     BotUpdate,
     ConnectionCreate,
     HedgeParameters,
@@ -25,23 +23,19 @@ from .models import (
 )
 from .notifications import Notifications
 from .runtime import Runtime
-from .store import Store, alerts, fills, operations
-
-
-def money(value: str | Decimal | None) -> str:
-    return "待确认" if value is None else f"${Decimal(value):,.2f}"
-
-
-def stamp(value: float) -> str:
-    return datetime.fromtimestamp(value, ZoneInfo(os.environ.get("PFB_TIMEZONE", "Asia/Shanghai"))).strftime(
-        "%m-%d %H:%M:%S"
-    )
+from .store import Store, fills, operations
 
 
 def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> None:
     @ui.page("/")
     async def home():
         bot_forms: dict[str, ui.dialog] = {}
+        client = ui.context.client
+
+        def notify(message: str, **kwargs):
+            with client.layout:
+                ui.notify(message, **kwargs)
+
         ui.colors(primary="#059669", positive="#059669")
         ui.add_head_html('<meta name="viewport" content="width=device-width, initial-scale=1">')
         ui.add_css("""
@@ -75,13 +69,13 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
             async def action(bot_id: str, command: str):
                 try:
                     await runtime.command(bot_id, command)
-                    ui.notify("操作已完成", color="positive")
+                    notify("操作已完成", color="positive")
                 except (ValueError, Exception) as exc:
-                    ui.notify(
+                    notify(
                         str(exc) if isinstance(exc, ValueError) else "操作失败，请查看后台日志",
                         color="negative",
                     )
-                await bots_view.refresh()
+                await bots_view()
 
             async def close_dialog(bot_id: str):
                 bot = store.bot(bot_id)
@@ -99,144 +93,35 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         button = ui.button("确认平仓", on_click=confirm, color="orange")
                 dialog.open()
 
-            @ui.refreshable
+            bot_cards: dict[str, BotCard] = {}
+            view_lock = asyncio.Lock()
+
             async def bots_view():
-                current = store.bots()
-                if not current:
-                    with ui.card().classes("w-full p-10 items-center gap-4"):
-                        ui.icon("rocket_launch", size="48px").classes("text-emerald-600")
-                        ui.label("从你的第一个 Bot 开始").classes("text-2xl font-bold")
-                        ui.label("先连接两个交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
-                        ui.button("连接交易所账户", on_click=lambda: tabs.set_value(accounts_tab), icon="add")
-                    return
-                with ui.row().classes("w-full gap-4"):
+                async with view_lock:
+                    current = store.bots()
+                    empty_bots.set_visibility(not current)
+                    bot_summary.set_visibility(bool(current))
                     for label, value in [
-                        ("Bots", str(len(current))),
-                        ("持仓 Bots", str(sum(bool(store.positions(b.id)) for b in current))),
-                        ("账户实例", str(len(store.connections()))),
+                        ("Bots", len(current)),
+                        ("持仓 Bots", sum(bool(store.positions(b.id)) for b in current)),
+                        ("账户实例", len(store.connections())),
                     ]:
-                        with ui.card().classes("flex-1 min-w-40 p-5 gap-1"):
-                            ui.label(label).classes("text-slate-500 text-sm")
-                            ui.label(value).classes("text-3xl font-bold")
-                for bot in current:
-                    pnl = await runtime.pnl(bot.id)
-                    funding = await runtime.funding(bot.id)
-                    editable = store.bot_editability(bot.id)
-                    long = store.connection(bot.parameters.long_connection_id)
-                    short = store.connection(bot.parameters.short_connection_id)
-                    with ui.card().classes("w-full p-6 gap-4"):
-                        with ui.row().classes("w-full items-center justify-between"):
-                            with ui.row().classes("items-center gap-3"):
-                                ui.label(bot.name).classes("text-xl font-bold")
-                                ui.badge(bot.parameters.symbol, color="blue-grey")
-                            ui.badge(
-                                STATE_NAMES[bot.state],
-                                color="positive" if bot.state == BotState.HOLDING else "grey-7",
-                            )
-                        ui.label(f"做多 {long.name} ↔ 做空 {short.name}").classes("text-slate-600")
-                        ui.label(
-                            f"价差条件 ≥ {bot.parameters.threshold_pct}% · 目标单侧金额 {money(bot.parameters.target_usd)}"
-                        )
-                        with ui.row().classes("w-full gap-4"):
-                            for role, account, title in [("long", long, "做多"), ("short", short, "做空")]:
-                                rate = funding[role]
-                                with ui.column().classes("flex-1 min-w-60 bg-slate-50 rounded-xl p-3 gap-1"):
-                                    ui.label(f"{title} {account.name} · 资金费率").classes(
-                                        "text-sm text-slate-500"
-                                    )
-                                    if rate["status"] == "available":
-                                        predicted = Decimal(rate["predicted_rate_pct"])
-                                        direction = (
-                                            "无需支付"
-                                            if predicted == 0
-                                            else "预计支付"
-                                            if (predicted > 0) == (role == "long")
-                                            else "预计收取"
-                                        )
-                                        ui.label(f"{predicted:+.6f}% / 1小时 · {direction}").classes(
-                                            "font-semibold"
-                                        )
-                                        ui.label(f"上次结算 {Decimal(rate['last_rate_pct']):+.6f}%").classes(
-                                            "text-xs text-slate-500"
-                                        )
-                                        ui.label(
-                                            f"下次结算 {stamp(rate['next_payment_at'])} · 更新 {stamp(rate['received_at'])}"
-                                        ).classes("text-xs text-slate-500")
-                                    else:
-                                        ui.label("暂不可用").classes("text-amber-800")
-                                        ui.label(rate["unavailable_reason"]).classes("text-xs text-slate-500")
-                        if funding["net_receipt_rate_pct"] is not None:
-                            ui.label(
-                                f"等额双腿预估净收取费率 {Decimal(funding['net_receipt_rate_pct']):+.6f}% / 1小时"
-                                "（正数收取，负数支付）"
-                            ).classes("text-sm")
-                        ui.label(
-                            "当前费率为下次结算预估，会随市场变化；实际资金费尚未计入 Bot 盈亏。"
-                        ).classes("text-xs text-slate-500")
-                        with ui.row().classes("gap-8"):
-                            for label, value in [
-                                ("价格盈亏", pnl["gross"]),
-                                ("已实现价差", pnl["realized"]),
-                                ("手续费", pnl["fees"]),
-                            ]:
-                                with ui.column().classes("gap-1"):
-                                    ui.label(label).classes("text-xs text-slate-500")
-                                    ui.label(money(value)).classes("text-xl font-semibold")
-                        for pos in store.positions(bot.id):
-                            ui.label(
-                                f"{'多仓' if pos.role == 'long' else '空仓'} {pos.quantity} {pos.symbol} · 均价 {money(pos.entry_price)}"
-                            ).classes("text-sm")
-                        ui.label(bot.reason).classes("text-sm text-slate-500")
-                        if pnl["unavailable_reason"]:
-                            ui.label(pnl["unavailable_reason"]).classes("text-amber-800 text-sm")
-                        with ui.row().classes("gap-2"):
-                            if bot.state in {BotState.READY, BotState.STOPPED} and not store.positions(
-                                bot.id
-                            ):
-                                ui.button(
-                                    "启动",
-                                    icon="play_arrow",
-                                    on_click=lambda bid=bot.id: action(bid, "start"),
+                        summary_values[label].set_text(str(value))
+                    keep = {b.id for b in current}
+                    for bid in list(bot_cards):
+                        if bid not in keep:
+                            bot_cards.pop(bid).root.delete()
+                    for bot in current:
+                        pnl, funding = await asyncio.gather(runtime.pnl(bot.id), runtime.funding(bot.id))
+                        if bot.id not in {b.id for b in store.bots()}:
+                            continue
+                        bot = store.bot(bot.id)
+                        if bot.id not in bot_cards:
+                            with cards_container:
+                                bot_cards[bot.id] = BotCard(
+                                    bot.id, action, bot_dialog, delete_dialog, close_dialog, detail_dialog
                                 )
-                            if bot.state == BotState.PAUSED:
-                                ui.button("恢复", on_click=lambda bid=bot.id: action(bid, "resume"))
-                            if bot.state in {BotState.WAITING, BotState.HOLDING}:
-                                ui.button("暂停", on_click=lambda bid=bot.id: action(bid, "pause")).props(
-                                    "outline"
-                                )
-                            if bot.state not in {BotState.STOPPED, BotState.CLOSED}:
-                                ui.button("停止", on_click=lambda bid=bot.id: action(bid, "stop")).props(
-                                    "outline"
-                                )
-                            if bot.state == BotState.ATTENTION:
-                                ui.button(
-                                    "同步订单", icon="sync", on_click=lambda bid=bot.id: action(bid, "sync")
-                                ).props("outline")
-                            if store.positions(bot.id):
-                                ui.button(
-                                    "停止并平仓",
-                                    on_click=lambda bid=bot.id: close_dialog(bid),
-                                    color="orange",
-                                ).props("outline")
-                            ui.button(
-                                "修改参数",
-                                icon="edit",
-                                on_click=lambda bid=bot.id: bot_dialog(bid),
-                            ).props("outline")
-                            delete_button = ui.button(
-                                "删除",
-                                icon="delete_outline",
-                                on_click=lambda bid=bot.id: delete_dialog(bid),
-                                color="negative",
-                            ).props("flat")
-                            if not editable["delete"]:
-                                delete_button.disable()
-                                delete_button.tooltip("先停止 Bot、平仓并确认订单，才能删除")
-                            ui.button(
-                                "成交明细",
-                                icon="receipt_long",
-                                on_click=lambda bid=bot.id: detail_dialog(bid),
-                            ).props("flat")
+                        bot_cards[bot.id].update(bot, store, pnl, funding)
 
             def detail_dialog(bot_id: str):
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-4xl p-6"):
@@ -293,10 +178,10 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             if form is not None:
                                 form.delete()
                             dialog.close()
-                            await bots_view.refresh()
-                            ui.notify("Bot 已删除", color="positive")
+                            await bots_view()
+                            notify("Bot 已删除", color="positive")
                         except ValueError as exc:
-                            ui.notify(str(exc), color="negative")
+                            notify(str(exc), color="negative")
                             button.enable()
 
                     with ui.row().classes("w-full justify-end"):
@@ -311,7 +196,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     return
                 accounts = store.connections()
                 if len(accounts) < 2:
-                    ui.notify("请先添加至少两个账户实例；同一交易所可以添加多个", color="warning")
+                    notify("请先添加至少两个账户实例；同一交易所可以添加多个", color="warning")
                     tabs.set_value(accounts_tab)
                     return
                 request_id = uuid.uuid4().hex
@@ -485,9 +370,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             dialog.close()
                             bot_forms.pop(form_key, None)
                             dialog.delete()
-                            await bots_view.refresh()
+                            await bots_view()
                             tabs.set_value(bots_tab)
-                            ui.notify("Bot 已保存" if bot_id else "Bot 已创建，可点击启动", color="positive")
+                            notify("Bot 已保存" if bot_id else "Bot 已创建，可点击启动", color="positive")
                         except ValidationError:
                             form_error.set_text("参数格式不正确，请检查各字段。")
                         except ValueError as exc:
@@ -496,7 +381,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             form_error.set_text("保存失败，请稍后重试。")
                         finally:
                             busy = False
-                            save_button.enable()
+                            if not save_button.is_deleted:
+                                save_button.enable()
 
                     with ui.row().classes("w-full justify-end"):
                         ui.button("取消", on_click=dialog.close).props("flat")
@@ -672,13 +558,13 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             key_index.set_value(None)
                             dialog.close()
                             await accounts_view.refresh()
-                            ui.notify("账户已连接，余额与持仓已读取", color="positive")
+                            notify("账户已连接，余额与持仓已读取", color="positive")
                         except ValidationError:
                             form_error.set_text(
                                 "账户信息格式不正确，请核对钱包地址、账户编号和 API 签名密钥。"
                             )
                         except Exception as exc:
-                            ui.notify(
+                            notify(
                                 str(exc) if isinstance(exc, ValueError) else "账户连接失败，请核对账户和密钥",
                                 color="negative",
                             )
@@ -734,9 +620,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             try:
                                 await runtime.accounts.refresh(a.id)
                                 await accounts_view.refresh()
-                                ui.notify("账户已更新", color="positive")
+                                notify("账户已更新", color="positive")
                             except ValueError as exc:
-                                ui.notify(str(exc), color="negative")
+                                notify(str(exc), color="negative")
 
                         ui.button("刷新余额与持仓", icon="refresh", on_click=check).props("outline")
                 if not store.connections():
@@ -751,20 +637,13 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         ui.label(account.name).classes("text-lg font-semibold")
                         ui.label("积分：暂不可读取").classes("text-slate-500")
 
-            @ui.refreshable
+            alert_feed: AlertFeed | None = None
+
             def alerts_view():
+                nonlocal alert_feed
                 ui.label("通知与告警").classes("text-xl font-bold")
-                for alert in store.rows(alerts)[:50]:
-                    with ui.card().classes("w-full p-4"):
-                        ui.label(alert["message"])
-                        ui.label(stamp(alert["created_at"])).classes("text-xs text-slate-500")
-                        if not alert["acknowledged"]:
-
-                            def ack(aid=alert["id"]):
-                                store.acknowledge_alert(aid)
-                                alerts_view.refresh()
-
-                            ui.button("已读", on_click=ack).props("flat dense")
+                alert_feed = AlertFeed(store)
+                alert_feed.update()
                 with ui.expansion("Telegram 通知设置", icon="send").classes("w-full bg-white rounded-xl"):
                     ui.label("Token 仅加密保存在本机。网络失败时请以站内通知为准。")
                     token = ui.input("Bot Token", password=True).classes("w-full")
@@ -774,16 +653,16 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         try:
                             notifications.save(token.value, chat.value)
                             token.set_value("")
-                            ui.notify("Telegram 配置已加密保存", color="positive")
+                            notify("Telegram 配置已加密保存", color="positive")
                         except ValueError as exc:
-                            ui.notify(str(exc), color="negative")
+                            notify(str(exc), color="negative")
 
                     async def test_telegram():
                         try:
                             await notifications.send("这是你主动请求的 Perp Farming Bots 通知测试消息。")
-                            ui.notify("测试消息已发送", color="positive")
+                            notify("测试消息已发送", color="positive")
                         except ValueError as exc:
-                            ui.notify(str(exc), color="negative")
+                            notify(str(exc), color="negative")
 
                     with ui.row():
                         ui.button("保存", on_click=save_telegram)
@@ -792,6 +671,18 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
             with ui.tab_panels(tabs, value=bots_tab).classes("w-full bg-transparent"):
                 with ui.tab_panel(bots_tab).classes("p-0 gap-4"):
+                    with ui.card().classes("w-full p-10 items-center gap-4") as empty_bots:
+                        ui.icon("rocket_launch", size="48px").classes("text-emerald-600")
+                        ui.label("从你的第一个 Bot 开始").classes("text-2xl font-bold")
+                        ui.label("先连接两个交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
+                        ui.button("连接交易所账户", on_click=lambda: tabs.set_value(accounts_tab), icon="add")
+                    with ui.row().classes("w-full gap-4") as bot_summary:
+                        summary_values = {}
+                        for title in ["Bots", "持仓 Bots", "账户实例"]:
+                            with ui.card().classes("flex-1 min-w-40 p-5 gap-1"):
+                                ui.label(title).classes("text-slate-500 text-sm")
+                                summary_values[title] = ui.label().classes("text-3xl font-bold")
+                    cards_container = ui.column().classes("w-full gap-4")
                     await bots_view()
                 with ui.tab_panel(strategies_tab).classes("p-0 gap-4"):
                     for strategy in STRATEGIES:
@@ -811,11 +702,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
             async def refresh():
                 if tabs.value == bots_tab:
-                    await bots_view.refresh()
-                elif tabs.value == alerts_tab:
-                    alerts_view.refresh()
-                elif tabs.value == points_tab:
-                    points_view.refresh()
+                    await bots_view()
+                elif tabs.value == alerts_tab and alert_feed is not None:
+                    alert_feed.update()
 
             ui.timer(6, refresh)
             ui.label(

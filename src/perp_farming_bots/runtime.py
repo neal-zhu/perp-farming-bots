@@ -7,10 +7,12 @@ import math
 import secrets
 import time
 import uuid
-from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any, Literal
 
-from .markets import Markets
+from pydantic import ValidationError
+
+from .markets import Markets, VenueRequestError
 from .models import (
     Bot,
     BotCreate,
@@ -279,7 +281,8 @@ class Runtime:
         except Exception:
             # A send error does not establish rejection. Query the original client identity.
             self.store.update_order(order_id, "unknown")
-        for _ in range(8):
+        last_read_error = "交易所尚未返回可确认的终态成交"
+        for attempt in range(8):
             try:
                 result = await adapter.lookup(intent, native_id)
                 if result.status != "unknown":
@@ -288,11 +291,24 @@ class Runtime:
                 if result.native_id is not None:
                     native_id = result.native_id
                     self.store.update_order(order_id, "submitted", native_id)
-            except Exception:
+            except VenueRequestError as exc:
+                last_read_error = str(exc)
+                if not exc.retryable_read:
+                    break
+            except (KeyError, TypeError, InvalidOperation, ValidationError) as exc:
+                # An incomplete native read remains unknown. Query the same
+                # identity again; only complete valid evidence permits a peer.
+                last_read_error = f"订单回报不完整或格式无效（{type(exc).__name__}）"
+            except Exception as exc:
+                last_read_error = (
+                    str(exc) if isinstance(exc, ValueError) else f"订单回报解析失败（{type(exc).__name__}）"
+                )
                 break
-            await asyncio.sleep(0.5)
+            if attempt < 7:
+                await asyncio.sleep(0.5)
         self.store.update_order(order_id, "unknown", native_id)
-        return OrderResult(status="unknown", quantity=None, average_price=None, fee=None, native_id=native_id)
+        direction = "做多" if role == "long" else "做空"
+        raise ValueError(f"{direction}订单尚未确认：{last_read_error}；已停止后续提交，请同步原订单")
 
     def _unresolved(self, bot_id: str) -> bool:
         return any(o["status"] in UNRESOLVED for o in self.store.bot_orders(bot_id))
@@ -335,8 +351,6 @@ class Runtime:
                     False,
                     preview.long_price,
                 )
-                if first.status == "unknown":
-                    raise ValueError("做多订单结果未知，已停止后续提交；请同步订单")
                 if first.quantity is None or first.quantity == 0:
                     raise ValueError("做多订单未成交，未提交做空订单")
                 short_account = self.store.connection(bot.parameters.short_connection_id)
@@ -347,7 +361,7 @@ class Runtime:
                 second = await self._execute(
                     bot, op_id, "short", short_account.id, "sell", short_quantity, False, preview.short_price
                 )
-                if second.status == "unknown" or second.quantity != first.quantity:
+                if second.quantity != first.quantity:
                     raise ValueError("两腿实际成交数量不匹配，需要处理；不会自动追加或止损")
             except Exception as exc:
                 message = str(exc) if isinstance(exc, ValueError) else "执行失败，请同步原订单和实际持仓"
@@ -386,7 +400,7 @@ class Runtime:
         op_id = self.store.operation(bot.id, "close")
         try:
             for p in allocated:
-                result = await self._execute(
+                await self._execute(
                     bot,
                     op_id,
                     p.role,
@@ -396,8 +410,6 @@ class Runtime:
                     True,
                     references[p.role],
                 )
-                if result.status == "unknown":
-                    raise ValueError("平仓订单结果未知，停止后续提交，请同步订单")
             if self.store.positions(bot.id):
                 raise ValueError("本次平仓未完全成交，保留剩余分配数量，可再次点击平仓")
         except Exception as exc:
@@ -442,8 +454,18 @@ class Runtime:
                 self.store.set_state(bot_id, BotState.HOLDING, "原建仓订单已确认完成")
                 self.store.finish_operation(latest["id"], "completed", "原建仓订单已确认")
             else:
-                self.store.set_state(bot_id, BotState.ATTENTION, "订单已同步，请查看实际成交与剩余持仓")
-                self.store.finish_operation(latest["id"], "attention", "实际持仓需要处理")
+                if not inventory:
+                    message = "订单已同步，没有已分配持仓；请查看原订单结果"
+                elif len(inventory) == 1:
+                    p = inventory[0]
+                    message = f"单腿持仓：{'多仓' if p.role == 'long' else '空仓'} {p.quantity} {p.symbol}；请自行处理"
+                else:
+                    message = "两腿持仓数量不匹配，请查看实际成交并自行处理"
+                self.store.set_state(bot_id, BotState.ATTENTION, message)
+                # Preserve the original failure evidence instead of replacing it
+                # with a generic message on every background synchronization.
+                if latest["status"] in {"pending", "unknown"}:
+                    self.store.finish_operation(latest["id"], "attention", latest["message"])
 
     async def pnl(self, bot_id: str) -> dict[str, Any]:
         history = self.store.rows(fills, bot_id)

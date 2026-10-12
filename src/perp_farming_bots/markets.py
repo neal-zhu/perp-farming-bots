@@ -21,6 +21,16 @@ HOSTS = {
 }
 
 
+class VenueRequestError(ValueError):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def retryable_read(self) -> bool:
+        return self.status_code is None or self.status_code in {404, 408, 425, 429} or self.status_code >= 500
+
+
 class Markets:
     """Native public REST books and market precision. No generated market data."""
 
@@ -42,10 +52,14 @@ class Markets:
         try:
             response = await self.http.request(method, HOSTS[provider] + path, **kwargs)
         except httpx.HTTPError as exc:
-            raise ValueError(f"{PROVIDER_NAMES[provider]} 网络连接失败（{type(exc).__name__}）") from exc
+            raise VenueRequestError(
+                f"{PROVIDER_NAMES[provider]} 网络连接失败（{type(exc).__name__}）"
+            ) from exc
         if response.status_code >= 400:
             # Do not expose raw responses which may echo signed requests or credentials.
-            raise ValueError(f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）")
+            raise VenueRequestError(
+                f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）", response.status_code
+            )
         result = response.json()
         if provider != Provider.ARCUS and result.get("code") != 200:
             raise ValueError(f"{PROVIDER_NAMES[provider]} 返回非成功状态")
