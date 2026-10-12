@@ -11,7 +11,17 @@ from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from typing import Any, Literal
 
 from .markets import Markets
-from .models import Bot, BotCreate, BotState, MarketSpec, OrderIntent, OrderResult, Preview, Provider
+from .models import (
+    Bot,
+    BotCreate,
+    BotState,
+    BotUpdate,
+    MarketSpec,
+    OrderIntent,
+    OrderResult,
+    Preview,
+    Provider,
+)
 from .store import Store, fills, operations, orders
 from .trading import Accounts
 
@@ -101,7 +111,28 @@ class Runtime:
                 logger.exception("runtime cycle failed")
             await asyncio.sleep(3)
 
-    async def preview(self, value: BotCreate | Bot) -> Preview:
+    async def funding(self, bot_id: str) -> dict[str, Any]:
+        bot = self.store.bot(bot_id)
+        p = bot.parameters
+        long, short = await asyncio.gather(
+            self.markets.funding(self.store.connection(p.long_connection_id).provider, p.symbol),
+            self.markets.funding(self.store.connection(p.short_connection_id).provider, p.symbol),
+        )
+        net = None
+        if (
+            long.status == short.status == "available"
+            and long.interval_seconds == short.interval_seconds
+            and long.predicted_rate_pct is not None
+            and short.predicted_rate_pct is not None
+        ):
+            net = str(short.predicted_rate_pct - long.predicted_rate_pct)
+        return {
+            "long": long.model_dump(mode="json"),
+            "short": short.model_dump(mode="json"),
+            "net_receipt_rate_pct": net,
+        }
+
+    async def preview(self, value: BotCreate | BotUpdate | Bot) -> Preview:
         p = value.parameters
         long, short = (
             self.store.connection(p.long_connection_id),

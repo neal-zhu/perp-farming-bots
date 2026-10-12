@@ -7,7 +7,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .models import PROVIDER_NAMES, STRATEGIES, TRADING_PROVIDERS, BotCreate, ConnectionCreate, Provider
+from .models import (
+    PROVIDER_NAMES,
+    STRATEGIES,
+    TRADING_PROVIDERS,
+    BotCreate,
+    BotUpdate,
+    ConnectionCreate,
+    Provider,
+)
 from .notifications import Notifications
 from .runtime import Runtime
 from .store import Store, alerts, fills, operations
@@ -109,6 +117,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
                     **bot.model_dump(mode="json"),
                     "pnl": await runtime.pnl(bot.id),
                     "positions": [p.model_dump(mode="json") for p in store.positions(bot.id)],
+                    "editability": store.bot_editability(bot.id),
                 }
             )
         return result
@@ -122,7 +131,17 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
             "fills": store.rows(fills, bot_id),
             "orders": store.bot_orders(bot_id),
             "operations": store.rows(operations, bot_id),
+            "editability": store.bot_editability(bot_id),
         }
+
+    @app.get("/api/bots/{bot_id}/funding")
+    async def bot_funding(bot_id: str):
+        return await runtime.funding(bot_id)
+
+    @app.put("/api/bots/{bot_id}")
+    async def update_bot(bot_id: str, value: BotUpdate):
+        async with runtime.guard:
+            return store.update_bot(bot_id, value).model_dump(mode="json")
 
     @app.post("/api/bots/{bot_id}/commands")
     async def command(bot_id: str, value: Command):

@@ -11,6 +11,7 @@ from perp_farming_bots.models import (
     AccountSnapshot,
     Book,
     ConnectionCreate,
+    FundingSnapshot,
     Level,
     MarketSpec,
     NativePosition,
@@ -28,6 +29,20 @@ class FixtureMarkets(Markets):
     def __init__(self):
         super().__init__()
         self.stale = False
+
+    async def funding(self, provider, symbol):
+        return FundingSnapshot(
+            provider=provider,
+            symbol=symbol,
+            status="available",
+            predicted_rate_pct=Decimal("0.0012"),
+            last_rate_pct=Decimal("0.0010"),
+            interval_seconds=3600,
+            next_payment_at=time.time() + 600,
+            received_at=time.time(),
+            source="test fixture",
+            unavailable_reason=None,
+        )
 
     async def spec(self, provider, symbol):
         return MarketSpec(

@@ -7,6 +7,7 @@ This repository now includes independently written application code, tests and p
 | [elliottech/lighter-python](https://github.com/elliottech/lighter-python) | Lighter/RH public SDK | Apache-2.0 source LICENSE | Installed pinned native signing SDK; real-order code path, not funded-order certified |
 | [ccxt/ccxt](https://github.com/ccxt/ccxt) | Other REST/WS connectors | MIT | Evaluated for later adapters; not currently a runtime dependency |
 | [sethmlarson/truststore](https://github.com/sethmlarson/truststore) | OS certificate trust | MIT | Explicit HTTPX SSLContext |
+| [python-websockets/websockets](https://github.com/python-websockets/websockets) | Read-only native funding stream | BSD-3-Clause | Short public market_stats subscriptions with verified TLS |
 | [zauberzeug/nicegui](https://github.com/zauberzeug/nicegui) | Browser UI | MIT | Dependency |
 | [fastapi/fastapi](https://github.com/fastapi/fastapi) | HTTP/lifecycle | MIT | NiceGUI dependency and application routes |
 | [sqlalchemy/sqlalchemy](https://github.com/sqlalchemy/sqlalchemy) | Persistence | MIT | Dependency |

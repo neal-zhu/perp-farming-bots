@@ -16,6 +16,10 @@ Restart and synchronization query original identities without reissuing requests
 
 Acceptance covered by current tests: per-bot close ownership, same-venue multiple accounts, creation idempotency, original-order lookup after lost ACK, first/peer/close partial fills, no blind repeat, stale quotes and external-inventory blocking. Production credentials and real funded orders have not been used for acceptance yet.
 
+The browser/API supports bot parameter editing and confirmed deletion. Entry bindings stay fixed after execution; confirmed holding bots can adjust close slippage. Editing entry parameters stops condition monitoring until explicit restart. Deletion is blocked by owned inventory or unresolved journals and retains historical rows. Both create/edit and account onboarding validate names before submission and reuse a single form per page.
+
+Funding cards read Arcus market metadata and short, read-only Lighter market_stats subscriptions, caching for 30 seconds. Both display native hourly estimates separately from last settlement rates, with explicit unavailability. Funding is still excluded from actual bot PnL until payment attribution is implemented.
+
 ## Next acceptance step
 
 Connect user-owned accounts through the application and verify private identity, balance and position reads. Then perform an explicitly user-controlled small entry/close on each profile, compare native order and fill records, and verify fees, reduce-only and native precision. Public reads and local fixtures are insufficient evidence of funded execution.
@@ -23,7 +27,7 @@ Connect user-owned accounts through the application and verify private identity,
 ## Remaining modules
 
 - Long-range paginated native history and WebSocket reconciliation.
-- Lighter trade fee collection, funding and official points.
+- Lighter trade fee collection, actual funding payment attribution and official points.
 - Additional exchange account/execution adapters.
 - Grid/scalping: define their actual rules before implementing.
 - Security/access design after the main flows, without preselecting passwords or Basic Auth.

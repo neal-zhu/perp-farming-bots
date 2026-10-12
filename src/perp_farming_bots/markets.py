@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import ssl
 import time
 from decimal import Decimal
@@ -8,8 +9,10 @@ from typing import Any
 
 import httpx
 import truststore
+from pydantic import ValidationError
+from websockets.asyncio.client import connect
 
-from .models import PROVIDER_NAMES, Book, Level, MarketSpec, Provider
+from .models import PROVIDER_NAMES, Book, FundingSnapshot, Level, MarketSpec, Provider
 
 HOSTS = {
     Provider.ARCUS: "https://api.arcus.xyz",
@@ -26,6 +29,9 @@ class Markets:
         self.cache: dict[tuple[Provider, str], Book] = {}
         self.catalogs: dict[Provider, dict[str, MarketSpec]] = {}
         self.locks: dict[tuple[Provider, str], asyncio.Lock] = {}
+        self.funding_cache: dict[tuple[Provider, str], FundingSnapshot] = {}
+        self.funding_locks: dict[tuple[Provider, str], asyncio.Lock] = {}
+        self.funding_checked: dict[tuple[Provider, str], float] = {}
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -136,3 +142,87 @@ class Markets:
             )
             self.cache[key] = book
             return book
+
+    async def _funding_data(self, provider: Provider, spec: MarketSpec) -> dict[str, Any]:
+        if provider == Provider.ARCUS:
+            response = await self.request(provider, "GET", "/v1/markets")
+            matches = [m for m in response["markets"] if m["marketId"] == spec.market_id]
+            if len(matches) != 1 or matches[0]["baseAsset"] != spec.symbol:
+                raise ValueError("资金费率市场身份不匹配")
+            m = matches[0]
+            return {
+                "predicted_rate_pct": Decimal(m["nextFundingRate"]) * 100,
+                "last_rate_pct": Decimal(m["fundingRate"]) * 100,
+                "next_payment_at": m["nextFundingAt"],
+            }
+        # A short read-only subscription gives the native hourly estimate. The
+        # REST funding-rates comparison feed has different rate semantics.
+        url = HOSTS[provider].replace("https://", "wss://") + "/stream?readonly=true"
+        async with asyncio.timeout(10):
+            async with connect(
+                url, ssl=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), open_timeout=8, close_timeout=1
+            ) as ws:
+                await ws.send(json.dumps({"type": "subscribe", "channel": f"market_stats/{spec.market_id}"}))
+                async for raw in ws:
+                    response = json.loads(raw)
+                    if response.get("type") == "ping":
+                        await ws.send(json.dumps({"type": "pong"}))
+                    if response.get("channel") != f"market_stats:{spec.market_id}":
+                        continue
+                    m = response["market_stats"]
+                    if m["market_id"] != spec.market_id or m["symbol"] != spec.symbol:
+                        raise ValueError("资金费率市场身份不匹配")
+                    if not 0 <= time.time() - response["timestamp"] / 1000 <= 60:
+                        raise ValueError("资金费率数据已过期")
+                    # Lighter's native market_stats rates are percentage points.
+                    next_payment = (m["funding_timestamp"] // 1000) + 3600
+                    return {
+                        "predicted_rate_pct": Decimal(m["current_funding_rate"]),
+                        "last_rate_pct": Decimal(m["funding_rate"]),
+                        "next_payment_at": next_payment,
+                    }
+        raise ValueError("资金费率连接提前关闭")
+
+    async def funding(self, provider: Provider, symbol: str) -> FundingSnapshot:
+        key = provider, symbol
+        async with self.funding_locks.setdefault(key, asyncio.Lock()):
+            cached = self.funding_cache.get(key)
+            if cached is not None and time.time() - self.funding_checked[key] < 30:
+                if cached.status == "unavailable" or (
+                    cached.next_payment_at is not None and cached.next_payment_at > time.time()
+                ):
+                    return cached
+            source = f"{PROVIDER_NAMES[provider]} 官方资金费率"
+            try:
+                spec = await self.spec(provider, symbol)
+                data = await self._funding_data(provider, spec)
+                if not time.time() < data["next_payment_at"] <= time.time() + 3660:
+                    raise ValueError("资金费率结算时间已过期或无效")
+                result = FundingSnapshot(
+                    provider=provider,
+                    symbol=symbol,
+                    status="available",
+                    interval_seconds=3600,
+                    received_at=time.time(),
+                    source=source,
+                    unavailable_reason=None,
+                    **data,
+                )
+            except Exception as exc:
+                result = FundingSnapshot(
+                    provider=provider,
+                    symbol=symbol,
+                    status="unavailable",
+                    predicted_rate_pct=None,
+                    last_rate_pct=None,
+                    interval_seconds=3600,
+                    next_payment_at=None,
+                    received_at=None,
+                    source=source,
+                    unavailable_reason=str(exc)
+                    if isinstance(exc, ValueError) and not isinstance(exc, ValidationError)
+                    else "资金费率读取失败，请稍后重试",
+                )
+            self.funding_cache[key] = result
+            self.funding_checked[key] = time.time()
+            return result

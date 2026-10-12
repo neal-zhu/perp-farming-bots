@@ -31,6 +31,7 @@ from .models import (
     Bot,
     BotCreate,
     BotState,
+    BotUpdate,
     Connection,
     ConnectionCreate,
     OrderIntent,
@@ -284,8 +285,55 @@ class Store:
         bot = self.bot(bot_id)
         if bot.state not in {BotState.READY, BotState.STOPPED, BotState.CLOSED} or self.positions(bot_id):
             raise ValueError("只能删除没有持仓、且尚未启动或已停止的 Bot")
+        if self.bot_pending(bot_id):
+            raise ValueError("有未确认订单或操作，不能删除；请先同步并处理")
         with self.transaction() as db:
             db.execute(delete(bots).where(bots.c.id == bot_id))
+
+    def bot_pending(self, bot_id: str) -> bool:
+        return any(
+            not order["applied"] or order["status"] in {"prepared", "submitting", "submitted", "unknown"}
+            for order in self.bot_orders(bot_id)
+        ) or any(op["status"] in {"pending", "unknown"} for op in self.rows(operations, bot_id))
+
+    def bot_editability(self, bot_id: str) -> dict[str, bool]:
+        bot = self.bot(bot_id)
+        pending = self.bot_pending(bot_id)
+        return {
+            "entry_parameters": not pending
+            and not self.positions(bot_id)
+            and not self.bot_orders(bot_id)
+            and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED, BotState.STOPPED},
+            "slippage": not pending and bot.state != BotState.ATTENTION,
+            "delete": not pending
+            and not self.positions(bot_id)
+            and bot.state in {BotState.READY, BotState.STOPPED, BotState.CLOSED},
+        }
+
+    def update_bot(self, bot_id: str, value: BotUpdate) -> Bot:
+        bot = self.bot(bot_id)
+        editable = self.bot_editability(bot_id)
+        entry_fields = set(type(value.parameters).model_fields) - {"slippage_bps"}
+        if value.parameters.model_dump(include=entry_fields) != bot.parameters.model_dump(
+            include=entry_fields
+        ):
+            if not editable["entry_parameters"]:
+                raise ValueError("已有订单或持仓，不能修改账户、币种、建仓金额或价差条件；请新建 Bot")
+        if value.parameters.slippage_bps != bot.parameters.slippage_bps and not editable["slippage"]:
+            raise ValueError("有未确认订单或需要处理的状态，不能修改滑点；请先同步并处理")
+        self.connection(value.parameters.long_connection_id)
+        self.connection(value.parameters.short_connection_id)
+        values: dict[str, Any] = {
+            "name": value.name,
+            "parameters": value.parameters.model_dump_json(),
+            "updated_at": time.time(),
+        }
+        if value.parameters != bot.parameters and bot.state in {BotState.WAITING, BotState.PAUSED}:
+            if editable["entry_parameters"]:
+                values.update(state=BotState.READY.value, reason="参数已修改，请重新启动")
+        with self.transaction() as db:
+            db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
+        return self.bot(bot_id)
 
     def positions(self, bot_id: str | None = None) -> list[Position]:
         query = select(positions)

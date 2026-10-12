@@ -1120,6 +1120,7 @@ dependencies = [
     { name = "nicegui" },
     { name = "sqlalchemy" },
     { name = "truststore" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -1138,6 +1139,7 @@ requires-dist = [
     { name = "nicegui", specifier = ">=3.0,<4" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "truststore", specifier = ">=0.10,<1" },
+    { name = "websockets", specifier = ">=15,<18" },
 ]
 
 [package.metadata.requires-dev]

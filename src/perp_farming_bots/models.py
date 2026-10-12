@@ -121,18 +121,9 @@ class HedgeParameters(StrictModel):
         return self
 
 
-class BotCreate(StrictModel):
-    request_id: str = Field(min_length=8, max_length=80)
+class BotUpdate(StrictModel):
     name: str = Field(min_length=1, max_length=80)
-    strategy: str = "spread_hedging"
     parameters: HedgeParameters
-
-    @field_validator("strategy")
-    @classmethod
-    def implemented_strategy(cls, value: str) -> str:
-        if value != "spread_hedging":
-            raise ValueError("网格和剥头皮尚未实现")
-        return value
 
     @field_validator("name")
     @classmethod
@@ -140,6 +131,18 @@ class BotCreate(StrictModel):
         if not value.strip():
             raise ValueError("Bot 名称不能为空")
         return value.strip()
+
+
+class BotCreate(BotUpdate):
+    request_id: str = Field(min_length=8, max_length=80)
+    strategy: str = "spread_hedging"
+
+    @field_validator("strategy")
+    @classmethod
+    def implemented_strategy(cls, value: str) -> str:
+        if value != "spread_hedging":
+            raise ValueError("网格和剥头皮尚未实现")
+        return value
 
 
 class Bot(BotCreate):
@@ -214,6 +217,33 @@ class Preview(StrictModel):
     spread_pct: Decimal
     estimated_fees: Decimal | None
     source: str
+
+
+class FundingSnapshot(StrictModel):
+    provider: Provider
+    symbol: str
+    status: Literal["available", "unavailable"]
+    # Percent per native settlement interval, not an annualized or 8-hour rate.
+    predicted_rate_pct: Decimal | None = Field(allow_inf_nan=False)
+    last_rate_pct: Decimal | None = Field(allow_inf_nan=False)
+    interval_seconds: int = Field(gt=0)
+    next_payment_at: float | None
+    received_at: float | None
+    source: str
+    unavailable_reason: str | None
+
+    @model_validator(mode="after")
+    def valid_state(self) -> FundingSnapshot:
+        values = [self.predicted_rate_pct, self.last_rate_pct, self.next_payment_at, self.received_at]
+        if self.status == "available" and (
+            any(v is None for v in values) or self.unavailable_reason is not None
+        ):
+            raise ValueError("可用的资金费率必须包含完整数据")
+        if self.status == "unavailable" and (
+            any(v is not None for v in values) or not self.unavailable_reason
+        ):
+            raise ValueError("不可用的资金费率必须明确原因，不能包含未经确认的数据")
+        return self
 
 
 class Position(StrictModel):
