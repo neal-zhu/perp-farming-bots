@@ -198,6 +198,26 @@ async def test_arcus_is_explicitly_unavailable(system):
     assert not store.rows(fills)
 
 
+async def test_mixed_quote_sources_are_labeled_per_leg(system, monkeypatch):
+    store, runtime = system
+    long = store.add_connection(ConnectionCreate(name="虚构", provider=Provider.DEMO_A, account_ref="A"))
+    short = store.add_connection(ConnectionCreate(name="公共", provider=Provider.LIGHTER, account_ref="B"))
+    old_fetch = runtime.markets._fetch
+
+    async def quotes(provider, symbol):
+        book = await old_fetch(Provider.DEMO_A, symbol)
+        return (
+            book
+            if provider == Provider.DEMO_A
+            else book.model_copy(update={"provider": Provider.LIGHTER, "source": "公共盘口 · 模拟成交"})
+        )
+
+    monkeypatch.setattr(runtime.markets, "_fetch", quotes)
+    preview = await runtime.preview(create_bot(store, long, short))
+    assert "多腿：虚构演示行情" in preview.source
+    assert "空腿：公共盘口" in preview.source
+
+
 def test_unimplemented_strategy_is_rejected(system):
     store, _ = system
     long, short = accounts(store)

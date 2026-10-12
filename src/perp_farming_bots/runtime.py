@@ -29,8 +29,14 @@ class Runtime:
         # Paper fills + both inventories are atomic; an interrupted pending operation had no partial commit.
         for op in self.store.rows(operations):
             if op["status"] == "pending":
-                self.store.finish_operation(op["id"], "interrupted", "模拟操作未完成，重启后未自动重发")
-                self.store.alert("上次模拟操作被中断，请核对状态后重新操作", op["bot_id"], "warning")
+                self.store.finish_operation(
+                    op["id"], "interrupted", "模拟成交事务未提交；按当前 Bot 状态继续运行"
+                )
+                self.store.alert(
+                    "上次模拟操作未成交；等待中的 Bot 继续监测，持仓中的 Bot 保留持仓",
+                    op["bot_id"],
+                    "warning",
+                )
         self.task = asyncio.create_task(self.run())
 
     async def stop(self) -> None:
@@ -74,11 +80,7 @@ class Runtime:
             raise ValueError("金额不足以生成模拟数量")
         long_price, short_price = long_book.vwap("buy", quantity), short_book.vwap("sell", quantity)
         fee = quantity * (long_price * long.paper_fee_bps + short_price * short.paper_fee_bps) / 10000
-        source = (
-            "虚构演示行情"
-            if all(x.provider in {Provider.DEMO_A, Provider.DEMO_B} for x in (long, short))
-            else "公开行情；模拟成交、模拟 USD 与自设手续费"
-        )
+        source = f"多腿：{long_book.source} / 空腿：{short_book.source}"
         return Preview(
             quantity=quantity,
             long_price=long_price,
