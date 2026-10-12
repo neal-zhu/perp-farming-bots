@@ -8,21 +8,19 @@ from perp_farming_bots.api import register_routes
 from perp_farming_bots.markets import Markets
 from perp_farming_bots.notifications import Notifications
 from perp_farming_bots.runtime import Runtime
-from perp_farming_bots.security import BasicAuth, Secrets
+from perp_farming_bots.security import Secrets
 from perp_farming_bots.store import Store
 
 
-def test_authenticated_api_flow_and_same_venue_bindings(tmp_path: Path):
+def test_local_api_flow_and_same_venue_bindings(tmp_path: Path):
     store = Store(tmp_path / "api.db")
     secrets = Secrets(tmp_path)
     runtime = Runtime(store, Markets())
     notifications = Notifications(store, secrets)
     app = FastAPI()
-    app.add_middleware(BasicAuth, password=secrets.password)
     register_routes(app, store, runtime, notifications)
     with TestClient(app) as client:
-        assert client.get("/api/connections").status_code == 401
-        client.auth = ("admin", secrets.password)
+        assert client.get("/api/connections").status_code == 200
         account_a = client.post(
             "/api/connections", json={"name": "同场馆 A", "provider": "demo_a", "account_ref": "A"}
         ).json()

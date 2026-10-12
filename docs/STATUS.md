@@ -4,7 +4,7 @@ Validated 2026-10-12. The application is an independent, runnable **paper-only M
 
 ## Delivered
 
-- Python/NiceGUI browser application and authenticated HTTP/real-time transports.
+- Python/NiceGUI browser application with direct local access. Authentication/security design is pending.
 - Multiple explicit account instances on the same venue; bots bind instance IDs.
 - Built-in strategy catalog, with spread hedging enabled for simulation and grid/scalping clearly unavailable.
 - Multiple bots, creation idempotency, start/pause/resume/stop and bot-specific paper close.
@@ -19,16 +19,18 @@ Validated 2026-10-12. The application is an independent, runnable **paper-only M
 ## Verification
 
 - Ruff and mypy passed.
-- 18 tests passed, including same-venue separate accounts, independent multi-bot close, capacity, idempotency, stale data, restart, private API flow, HTTP/WS origin checks and encryption.
+- 15 tests passed, including same-venue separate accounts, independent multi-bot close, capacity, idempotency, stale data, restart, local API flow and notification-token encryption.
+- Local preview after removing Basic Auth: unauthenticated `GET /` and `GET /api/connections` return 200; the homepage HTML contains the workbench. The service runs on `127.0.0.1:8088` for this development session; the default documented port remains 8080.
 - Browser flow passed: create demo accounts -> preview/save bot -> start -> holding -> close -> fill history. No browser page errors were observed.
 - Linux ARM64 Docker build and actual HTTP paper open/close flow passed.
 - Official native signer library loaded without signing transactions, on development macOS ARM64 and the Linux ARM64 container.
-- CI on implementation commit `6fe5224` passed: [run](https://github.com/neal-zhu/perp-farming-bots/actions/runs/38209947385).
+- CI on the original implementation commit `6fe5224` passed: [run](https://github.com/neal-zhu/perp-farming-bots/actions/runs/38209947385). That revision used Basic Auth; the local prototype now removes it per the product decision to defer the security design.
 
 The existing FastAPI/Starlette test client emits a dependency deprecation warning; it did not fail the suite. No benchmark, distributed failover or exhaustive chaos suite was added.
 
 ## Explicit remaining work
 
+- Security and login design, deferred until after the main application flow.
 - Private/native exchange account reads and credential onboarding.
 - Real order preparation/submission/status recovery and partial-fill handling.
 - Arcus public/private perpetual adapter.

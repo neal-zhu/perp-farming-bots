@@ -52,7 +52,9 @@ Acceptance: unreadable, redacted, pending, stale and officially known zero point
 
 Provide pinned non-root images, Compose instructions, first-start connection wizard, encrypted backup/export, upgrade/restore instructions, screenshots, public support matrix, security reporting instructions, dependency license inventory and notices. Recovery operations remain visible across upgrades.
 
-Acceptance: test from a clean supported machine; admin actions are authenticated on HTTP/UI/real-time transport; secrets never enter exports/logs/browser persistent storage; restore warns against concurrent old/new instances and resumes original submissions before new trading. Publish only genuinely validated venues and container architectures.
+Security/login design is deferred during the local paper prototype phase; do not preselect password or Basic Auth. Before a beta release, define the access model and verify it on HTTP/UI/real-time transports.
+
+Acceptance: test from a clean supported machine; secrets never enter exports/logs/browser persistent storage; restore warns against concurrent old/new instances and resumes original submissions before new trading. Publish only genuinely validated venues and container architectures.
 
 ## Slice 9 — Built-in grid strategy
 

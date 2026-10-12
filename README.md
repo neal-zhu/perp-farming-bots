@@ -10,23 +10,22 @@
 
 ## 启动
 
-需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)，或 Docker Compose。所有首次生成数据和密码保存在本机，不进入 Git。
+需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)，或 Docker Compose。运行数据保存在本机，不进入 Git。
 
 ```bash
 uv sync --frozen
 uv run perp-farming-bots
 ```
 
-打开 `http://127.0.0.1:8080`，用户名 `admin`。首次密码在 `data/admin-password.txt` 中。页面先点击“创建演示账户”，再“创建 Bot”，预览、保存并启动，可跑通虚构行情的模拟开仓和平仓。可以独立创建多个账户和多个 Bot。
+打开 `http://127.0.0.1:8080`，当前本地原型免登录。页面先点击“创建演示账户”，再“创建 Bot”，预览、保存并启动，可跑通虚构行情的模拟开仓和平仓。可以独立创建多个账户和多个 Bot。
 
 ```bash
 docker compose up --build -d
-docker compose exec app cat /app/data/admin-password.txt
 ```
 
 Docker 默认只向本机暴露端口，数据放在命名 volume。`docker compose down` 保留数据；不要用 `down -v` 删除需要保留的记录。当前容器验证目标为本开发机的 Linux ARM64；其他架构尚未单独验证。
 
-可通过环境变量设置 `PFB_ADMIN_PASSWORD`（至少 12 字符）、`PFB_HOST`、`PFB_PORT`、`PFB_DATA_DIR`、`PFB_TIMEZONE`（默认 Asia/Shanghai）。`.env.example` 是变量参考；本地可使用 `uv run --env-file .env perp-farming-bots` 显式加载自己的配置。远程访问应配置 HTTPS；当前内置 Basic Auth 覆盖 HTTP 和 WebSocket，普通 HTTP 不能保护网络传输的密码。
+可通过环境变量设置 `PFB_HOST`、`PFB_PORT`、`PFB_DATA_DIR`、`PFB_TIMEZONE`（默认 Asia/Shanghai）。`.env.example` 是变量参考；本地可使用 `uv run --env-file .env perp-farming-bots` 显式加载自己的配置。安全与登录方案待定；当前按本地模拟开发运行，默认只监听本机，Compose 也仅向本机开放端口。
 
 ## 当前模拟行为
 
@@ -45,7 +44,7 @@ make check
 make test
 ```
 
-测试覆盖同场馆多账户、多 Bot 独立关闭、资金占用、创建幂等、过期行情、重启、HTTP/实时认证与密钥加密。CI 使用锁定依赖运行相同检查。
+测试覆盖同场馆多账户、多 Bot 独立关闭、资金占用、创建幂等、过期行情、重启、本地 API 流程与通知密钥加密。CI 使用锁定依赖运行相同检查。
 
 ![模拟 Bot 持仓界面](docs/screenshots/bots.png)
 

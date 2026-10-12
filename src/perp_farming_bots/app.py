@@ -11,7 +11,7 @@ from .api import register_routes
 from .markets import Markets
 from .notifications import Notifications
 from .runtime import Runtime
-from .security import BasicAuth, Secrets
+from .security import Secrets
 from .store import Store
 from .ui import install_ui
 
@@ -32,7 +32,6 @@ def main() -> None:
     store = Store(directory / "app.db")
     runtime = Runtime(store, Markets())
     notifications = Notifications(store, secrets)
-    app.add_middleware(BasicAuth, password=secrets.password)
     register_routes(app, store, runtime, notifications)
     install_ui(store, runtime, notifications)
 
@@ -48,14 +47,7 @@ def main() -> None:
 
     app.on_startup(startup)
     app.on_shutdown(shutdown)
-    password_source = (
-        "PFB_ADMIN_PASSWORD environment variable"
-        if os.environ.get("PFB_ADMIN_PASSWORD") is not None
-        else str(directory / "admin-password.txt")
-    )
-    logging.getLogger(__name__).info(
-        "Paper-only execution. Login: admin. Password source: %s", password_source
-    )
+    logging.getLogger(__name__).info("Paper-only local prototype. Authentication design is pending.")
     ui.run(
         host=os.environ.get("PFB_HOST", "127.0.0.1"),
         port=int(os.environ.get("PFB_PORT", "8080")),
