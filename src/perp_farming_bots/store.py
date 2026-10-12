@@ -26,7 +26,17 @@ from sqlalchemy import (
 from sqlalchemy import Connection as DBConnection
 from sqlalchemy.exc import IntegrityError
 
-from .models import Bot, BotCreate, BotState, Connection, ConnectionCreate, Position
+from .models import (
+    AccountSnapshot,
+    Bot,
+    BotCreate,
+    BotState,
+    Connection,
+    ConnectionCreate,
+    OrderIntent,
+    OrderResult,
+    Position,
+)
 
 metadata = MetaData()
 connections = Table(
@@ -36,8 +46,11 @@ connections = Table(
     Column("name", String, nullable=False, unique=True),
     Column("provider", String, nullable=False),
     Column("account_ref", String, nullable=False),
-    Column("paper_balance", String, nullable=False),
-    Column("paper_fee_bps", String, nullable=False),
+    Column("account_index", Integer, nullable=False),
+    Column("address", String, nullable=True),
+    Column("api_key_index", Integer, nullable=True),
+    Column("credentials", Text, nullable=False),
+    Column("verified_at", Float, nullable=False),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("provider", "account_ref"),
 )
@@ -63,7 +76,7 @@ positions = Table(
     Column("symbol", String, nullable=False),
     Column("quantity", String, nullable=False),
     Column("entry_price", String, nullable=False),
-    Column("opening_fee", String, nullable=False),
+    Column("opening_fee", String, nullable=True),
 )
 fills = Table(
     "fills",
@@ -76,7 +89,7 @@ fills = Table(
     Column("side", String, nullable=False),
     Column("quantity", String, nullable=False),
     Column("price", String, nullable=False),
-    Column("fee", String, nullable=False),
+    Column("fee", String, nullable=True),
     Column("realized_pnl", String, nullable=False),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("operation_id", "role"),
@@ -106,20 +119,39 @@ settings = Table(
     "settings", metadata, Column("key", String, primary_key=True), Column("value", Text, nullable=False)
 )
 
+orders = Table(
+    "orders",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("operation_id", String, nullable=False),
+    Column("bot_id", String, nullable=False),
+    Column("role", String, nullable=False),
+    Column("connection_id", String, nullable=False),
+    Column("intent", Text, nullable=False),
+    Column("payload", Text, nullable=False),
+    Column("native_id", String, nullable=True),
+    Column("status", String, nullable=False),
+    Column("result", Text, nullable=True),
+    Column("applied", Integer, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("operation_id", "role"),
+)
+
 
 class Store:
-    """A single-process SQLite store. Paper two-leg fills commit in one transaction."""
+    """Account identities and durable native-order journals in a single-process SQLite store."""
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 1}:
+            if version not in {0, 2}:
                 raise ValueError(f"Unsupported database schema version {version}")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            db.exec_driver_sql("PRAGMA user_version=1")
+            db.exec_driver_sql("PRAGMA user_version=2")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -129,19 +161,47 @@ class Store:
     def close(self) -> None:
         self.engine.dispose()
 
-    def add_connection(self, value: ConnectionCreate) -> Connection:
-        item = Connection(**value.model_dump(), id=uuid.uuid4().hex, created_at=time.time())
+    def add_connection(
+        self, value: ConnectionCreate, snapshot: AccountSnapshot, encrypted: str
+    ) -> Connection:
+        account_ref = (
+            f"{value.address}:{value.account_index}"
+            if value.provider.value == "arcus"
+            else str(value.account_index)
+        )
+        item = Connection(
+            **value.model_dump(exclude={"api_private_key"}),
+            account_ref=account_ref,
+            id=uuid.uuid4().hex,
+            created_at=time.time(),
+            verified_at=snapshot.received_at,
+        )
         try:
             with self.transaction() as db:
-                db.execute(insert(connections).values(**item.model_dump(mode="json")))
+                db.execute(insert(connections).values(**item.model_dump(mode="json"), credentials=encrypted))
         except IntegrityError as exc:
-            raise ValueError("账户名称已存在，或同一场馆的原生账户身份已经添加") from exc
+            raise ValueError("账户名称已存在，或同一交易所的原生账户已经添加") from exc
         return item
+
+    @staticmethod
+    def _connection(row) -> Connection:
+        data = dict(row)
+        data.pop("credentials")
+        return Connection.model_validate(data)
+
+    def credentials(self, connection_id: str) -> str:
+        with self.engine.connect() as db:
+            result = db.execute(
+                select(connections.c.credentials).where(connections.c.id == connection_id)
+            ).scalar_one_or_none()
+        if result is None:
+            raise ValueError("账户凭据不存在")
+        return result
 
     def connections(self) -> list[Connection]:
         with self.engine.connect() as db:
             return [
-                Connection.model_validate(dict(row))
+                self._connection(row)
                 for row in db.execute(select(connections).order_by(connections.c.created_at)).mappings()
             ]
 
@@ -150,7 +210,7 @@ class Store:
             row = db.execute(select(connections).where(connections.c.id == connection_id)).mappings().first()
         if row is None:
             raise ValueError("账户实例不存在")
-        return Connection.model_validate(dict(row))
+        return self._connection(row)
 
     def delete_connection(self, connection_id: str) -> None:
         for bot in self.bots():
@@ -167,7 +227,7 @@ class Store:
             **value.model_dump(),
             id=uuid.uuid4().hex,
             state=BotState.READY,
-            reason="模拟交易 · 尚未启动",
+            reason="尚未启动",
             created_at=now,
             updated_at=now,
         )
@@ -241,21 +301,6 @@ class Store:
         with self.engine.connect() as db:
             return [dict(row) for row in db.execute(query.order_by(table.c.created_at.desc())).mappings()]
 
-    def account_available(self, account: Connection) -> Decimal:
-        used = sum(
-            (p.quantity * p.entry_price for p in self.positions() if p.connection_id == account.id),
-            Decimal(0),
-        )
-        costs = sum(
-            (
-                Decimal(row["realized_pnl"]) - Decimal(row["fee"])
-                for row in self.rows(fills)
-                if row["connection_id"] == account.id
-            ),
-            Decimal(0),
-        )
-        return account.paper_balance + costs - used
-
     def operation(self, bot_id: str, kind: str) -> str:
         op_id = uuid.uuid4().hex
         now = time.time()
@@ -317,3 +362,120 @@ class Store:
         with self.transaction() as db:
             db.execute(delete(settings).where(settings.c.key == key))
             db.execute(insert(settings).values(key=key, value=value))
+
+    def add_order(self, op_id: str, bot_id: str, role: str, intent: OrderIntent, payload: str) -> str:
+        order_id = uuid.uuid4().hex
+        with self.transaction() as db:
+            db.execute(
+                insert(orders).values(
+                    id=order_id,
+                    operation_id=op_id,
+                    bot_id=bot_id,
+                    role=role,
+                    connection_id=intent.connection_id,
+                    intent=intent.model_dump_json(),
+                    payload=payload,
+                    native_id=None,
+                    status="prepared",
+                    result=None,
+                    applied=0,
+                    created_at=time.time(),
+                    updated_at=time.time(),
+                )
+            )
+        return order_id
+
+    def update_order(self, order_id: str, status: str, native_id: str | None = None) -> None:
+        values: dict[str, Any] = {"status": status, "updated_at": time.time()}
+        if native_id is not None:
+            values["native_id"] = native_id
+        with self.transaction() as db:
+            db.execute(update(orders).where(orders.c.id == order_id).values(**values))
+
+    def order(self, order_id: str) -> dict[str, Any]:
+        with self.engine.connect() as db:
+            row = db.execute(select(orders).where(orders.c.id == order_id)).mappings().one()
+        return dict(row)
+
+    def bot_orders(self, bot_id: str, *, public: bool = True) -> list[dict[str, Any]]:
+        result = self.rows(orders, bot_id)
+        for row in result:
+            row["intent"] = json.loads(row["intent"])
+            row["result"] = json.loads(row["result"]) if row["result"] is not None else None
+            if public:
+                row.pop("payload")
+        return result
+
+    def apply_order_result(self, order_id: str, result: OrderResult) -> None:
+        if result.status == "unknown":
+            self.update_order(order_id, "unknown", result.native_id)
+            return
+        with self.transaction() as db:
+            row = dict(db.execute(select(orders).where(orders.c.id == order_id)).mappings().one())
+            if row["applied"]:
+                if json.loads(row["result"]) != result.model_dump(mode="json"):
+                    raise ValueError("订单终态证据发生变化，需要人工核实")
+                return
+            intent = OrderIntent.model_validate_json(row["intent"])
+            quantity, price = result.quantity, result.average_price
+            if quantity is None or quantity > intent.quantity:
+                raise ValueError("场馆成交数量超出已提交数量")
+            if quantity > 0:
+                if price is None:
+                    raise ValueError("成交价格未知")
+                key = (positions.c.bot_id == row["bot_id"]) & (positions.c.role == row["role"])
+                position = db.execute(select(positions).where(key)).mappings().first()
+                realized = Decimal(0)
+                if intent.reduce_only:
+                    if position is None or quantity > Decimal(position["quantity"]):
+                        raise ValueError("平仓成交超出 Bot 分配数量")
+                    owned = Decimal(position["quantity"])
+                    realized = (
+                        (price - Decimal(position["entry_price"]))
+                        * quantity
+                        * (1 if row["role"] == "long" else -1)
+                    )
+                    if quantity == owned:
+                        db.execute(delete(positions).where(key))
+                    else:
+                        db.execute(update(positions).where(key).values(quantity=str(owned - quantity)))
+                else:
+                    if position is not None:
+                        raise ValueError("此 Bot 已有该腿库存，禁止重复开仓")
+                    db.execute(
+                        insert(positions).values(
+                            bot_id=row["bot_id"],
+                            role=row["role"],
+                            connection_id=row["connection_id"],
+                            symbol=intent.symbol,
+                            quantity=str(quantity),
+                            entry_price=str(price),
+                            opening_fee=str(result.fee) if result.fee is not None else None,
+                        )
+                    )
+                db.execute(
+                    insert(fills).values(
+                        id=order_id,
+                        operation_id=row["operation_id"],
+                        bot_id=row["bot_id"],
+                        connection_id=row["connection_id"],
+                        role=row["role"],
+                        side=intent.side,
+                        quantity=str(quantity),
+                        price=str(price),
+                        fee=str(result.fee) if result.fee is not None else None,
+                        realized_pnl=str(realized),
+                        created_at=time.time(),
+                    )
+                )
+            db.execute(
+                update(orders)
+                .where(orders.c.id == order_id)
+                .values(
+                    status=result.status,
+                    result=result.model_dump_json(),
+                    native_id=result.native_id,
+                    applied=1,
+                    updated_at=time.time(),
+                )
+            )

@@ -1,42 +1,69 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import secrets
 import time
 import uuid
-from decimal import ROUND_DOWN, Decimal
-from typing import Any
-
-from sqlalchemy import delete, insert
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
+from typing import Any, Literal
 
 from .markets import Markets
-from .models import Bot, BotCreate, BotState, Preview, Provider
-from .store import Store, fills, operations, positions
+from .models import Bot, BotCreate, BotState, MarketSpec, OrderIntent, OrderResult, Preview, Provider
+from .store import Store, fills, operations, orders
+from .trading import Accounts
 
 logger = logging.getLogger(__name__)
+UNRESOLVED = {"prepared", "submitting", "submitted", "unknown"}
+
+
+def common_step(a: Decimal, b: Decimal) -> Decimal:
+    a_exponent, b_exponent = a.as_tuple().exponent, b.as_tuple().exponent
+    if not isinstance(a_exponent, int) or not isinstance(b_exponent, int):
+        raise ValueError("数量精度必须是有限数字")
+    scale = Decimal(10) ** -min(a_exponent, b_exponent)
+    return Decimal(math.lcm(int(a * scale), int(b * scale))) / scale
+
+
+def quantity_floor(value: Decimal, step: Decimal) -> Decimal:
+    return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def bounded_price(value: Decimal, spec: MarketSpec, side: str) -> Decimal:
+    price = value
+    for _ in range(10):
+        tick = spec.price_tick
+        for tier in spec.tick_tiers:
+            if "upToPrice" not in tier or price < Decimal(tier["upToPrice"]):
+                tick = Decimal(tier["tick"])
+                break
+        snapped = (value / tick).to_integral_value(
+            rounding=ROUND_CEILING if side == "buy" else ROUND_DOWN
+        ) * tick
+        if snapped == price:
+            return snapped
+        price = snapped
+    raise ValueError("无法确定价格档位精度")
 
 
 class Runtime:
-    """Pragmatic paper runtime. It has no real-order submission capability."""
+    """Single-process native execution. Every send is journaled; uncertainty stops new sends."""
 
-    def __init__(self, store: Store, markets: Markets):
-        self.store, self.markets = store, markets
+    def __init__(self, store: Store, markets: Markets, accounts: Accounts):
+        self.store, self.markets, self.accounts = store, markets, accounts
         self.guard = asyncio.Lock()
         self.task: asyncio.Task[None] | None = None
         self.last_tick: float | None = None
 
     async def start(self) -> None:
-        # Paper fills + both inventories are atomic; an interrupted pending operation had no partial commit.
+        # No request is replayed on restart. Query originals; require operator review
+        # before any further entry when an interrupted operation exists.
         for op in self.store.rows(operations):
-            if op["status"] == "pending":
-                self.store.finish_operation(
-                    op["id"], "interrupted", "模拟成交事务未提交；按当前 Bot 状态继续运行"
-                )
-                self.store.alert(
-                    "上次模拟操作未成交；等待中的 Bot 继续监测，持仓中的 Bot 保留持仓",
-                    op["bot_id"],
-                    "warning",
-                )
+            if op["status"] in {"pending", "unknown"}:
+                self.store.set_state(op["bot_id"], BotState.ATTENTION, "上次操作中断，正在查询原订单")
+                self.store.finish_operation(op["id"], "unknown", "原订单待核实；不会重复提交")
         self.task = asyncio.create_task(self.run())
 
     async def stop(self) -> None:
@@ -49,14 +76,26 @@ class Runtime:
         await self.markets.close()
 
     async def run(self) -> None:
+        refreshed = 0.0
         while True:
             try:
-                for bot in self.store.bots():
-                    if bot.state == BotState.WAITING:
+                if time.time() - refreshed >= 15:
+                    for account in self.store.connections():
                         try:
+                            await self.accounts.refresh(account.id)
+                        except ValueError as exc:
+                            self.store.alert(f"{account.name}：{exc}", severity="warning")
+                    refreshed = time.time()
+                for bot in self.store.bots():
+                    try:
+                        if bot.state == BotState.ATTENTION:
+                            await self.sync(bot.id)
+                        elif bot.state == BotState.WAITING:
                             await self.try_open(bot.id)
-                        except Exception:
-                            logger.exception("paper strategy cycle failed")
+                    except Exception as exc:
+                        message = str(exc) if isinstance(exc, ValueError) else "策略执行异常，请检查日志"
+                        self.store.alert(message, bot.id, "error")
+                        logger.error("Strategy cycle failed for bot %s: %s", bot.id, type(exc).__name__)
                 self.last_tick = time.time()
             except Exception:
                 logger.exception("runtime cycle failed")
@@ -64,73 +103,176 @@ class Runtime:
 
     async def preview(self, value: BotCreate | Bot) -> Preview:
         p = value.parameters
-        long = self.store.connection(p.long_connection_id)
-        short = self.store.connection(p.short_connection_id)
-        if long.provider == Provider.ARCUS or short.provider == Provider.ARCUS:
-            raise ValueError("Arcus 行情尚未接入；可保存配置，但不能启动模拟执行")
-        long_book, short_book = await asyncio.gather(
-            self.markets.book(long.provider, p.symbol), self.markets.book(short.provider, p.symbol)
+        long, short = (
+            self.store.connection(p.long_connection_id),
+            self.store.connection(p.short_connection_id),
+        )
+        long_book, short_book, long_spec, short_spec = await asyncio.gather(
+            self.markets.book(long.provider, p.symbol),
+            self.markets.book(short.provider, p.symbol),
+            self.markets.spec(long.provider, p.symbol),
+            self.markets.spec(short.provider, p.symbol),
         )
         if not long_book.fresh() or not short_book.fresh():
             raise ValueError("行情已过期，暂不执行")
-        quantity = (p.target_usd / long_book.asks[0].price).quantize(
-            Decimal("0.00000001"), rounding=ROUND_DOWN
+        quantity = quantity_floor(
+            p.target_usd / long_book.asks[0].price,
+            common_step(long_spec.quantity_step, short_spec.quantity_step),
         )
         if quantity <= 0:
-            raise ValueError("金额不足以生成模拟数量")
+            raise ValueError("金额不足以生成符合两边精度的数量")
         long_price, short_price = long_book.vwap("buy", quantity), short_book.vwap("sell", quantity)
-        fee = quantity * (long_price * long.paper_fee_bps + short_price * short.paper_fee_bps) / 10000
-        source = f"多腿：{long_book.source} / 空腿：{short_book.source}"
+        for spec, price in [(long_spec, long_price), (short_spec, short_price)]:
+            if quantity < spec.min_quantity or quantity * price < spec.min_notional:
+                raise ValueError("金额低于交易所最小下单限制")
         return Preview(
             quantity=quantity,
             long_price=long_price,
             short_price=short_price,
             spread_pct=(short_price / long_price - 1) * 100,
-            estimated_fees=fee,
-            source=source,
+            estimated_fees=None,
+            source=f"多腿：{long_book.source} / 空腿：{short_book.source}",
         )
 
     def _direction_conflict(self, bot: Bot) -> None:
         desired = {bot.parameters.long_connection_id: "long", bot.parameters.short_connection_id: "short"}
-        for pos in self.store.positions():
-            if pos.symbol == bot.parameters.symbol and pos.connection_id in desired:
-                if pos.role != desired[pos.connection_id]:
-                    raise ValueError("该账户合约已被其他 Bot 持有相反方向；请选择另一个账户实例")
+        for position in self.store.positions():
+            if position.symbol == bot.parameters.symbol and position.connection_id in desired:
+                if position.role != desired[position.connection_id]:
+                    raise ValueError("该账户合约被其他 Bot 持有相反方向，请选择另一个账户实例")
+
+    async def _check_inventory(self, connection_id: str, symbol: str) -> None:
+        for order in self.store.rows(orders):
+            intent = OrderIntent.model_validate_json(order["intent"])
+            if (
+                order["connection_id"] == connection_id
+                and intent.symbol == symbol
+                and order["status"] in UNRESOLVED
+            ):
+                raise ValueError("该账户合约有未确认的订单，先同步原订单")
+        snapshot = await self.accounts.refresh(connection_id)
+        expected = sum(
+            (
+                p.quantity * (1 if p.role == "long" else -1)
+                for p in self.store.positions()
+                if p.connection_id == connection_id and p.symbol == symbol
+            ),
+            Decimal(0),
+        )
+        actual = sum((p.quantity for p in snapshot.positions if p.symbol == symbol), Decimal(0))
+        if expected != actual:
+            raise ValueError("账户实际持仓与 Bot 分配数量不一致，请先核实外部交易或持仓变化")
+        if await self.accounts.adapter(connection_id).open_orders(symbol):
+            raise ValueError("该账户合约有其他未成交委托，请先在交易所处理")
 
     async def command(self, bot_id: str, action: str) -> None:
+        if action == "sync":
+            await self.sync(bot_id)
+            return
         async with self.guard:
             bot = self.store.bot(bot_id)
             if action == "start":
-                if self.store.positions(bot_id):
-                    raise ValueError("该 Bot 已有持仓，请关闭后创建新的 Bot")
-                if bot.state == BotState.CLOSED:
-                    raise ValueError("已平仓的 Bot 保留历史，请创建新的 Bot")
+                if bot.state not in {BotState.READY, BotState.STOPPED}:
+                    raise ValueError("当前状态无法启动")
+                if self.store.positions(bot_id) or self.store.bot_orders(bot_id):
+                    raise ValueError("此 Bot 已执行过交易，请处理持仓后新建 Bot")
                 self._direction_conflict(bot)
                 await self.preview(bot)
-                self.store.set_state(bot_id, BotState.WAITING, "等待价差达到条件 · 模拟模式")
+                for connection_id in [bot.parameters.long_connection_id, bot.parameters.short_connection_id]:
+                    await self._check_inventory(connection_id, bot.parameters.symbol)
+                self.store.set_state(bot_id, BotState.WAITING, "等待价差达到条件后建仓")
             elif action == "pause":
-                if bot.state == BotState.CLOSED:
-                    raise ValueError("已平仓的 Bot 无需暂停")
-                self.store.set_state(bot_id, BotState.PAUSED, "不再执行新建仓；已持有数量保留")
+                if bot.state not in {BotState.WAITING, BotState.HOLDING}:
+                    raise ValueError("当前状态无法暂停")
+                self.store.set_state(bot_id, BotState.PAUSED, "停止新策略动作，保留持仓")
             elif action == "resume":
                 if bot.state != BotState.PAUSED:
                     raise ValueError("只有已暂停的 Bot 可以恢复")
                 state = BotState.HOLDING if self.store.positions(bot_id) else BotState.WAITING
                 self._direction_conflict(bot)
-                self.store.set_state(bot_id, state, "模拟策略已恢复")
+                self.store.set_state(bot_id, state, "策略已恢复")
             elif action == "stop":
                 if bot.state == BotState.CLOSED:
                     raise ValueError("已平仓的 Bot 无需停止")
-                self.store.set_state(bot_id, BotState.STOPPED, "策略已停止；此操作不平仓")
+                if self._unresolved(bot_id):
+                    raise ValueError("有未确认订单，请先同步；此时策略已经停止新动作")
+                self.store.set_state(bot_id, BotState.STOPPED, "策略已停止；保留持仓")
             elif action == "close":
                 await self._close(bot)
             else:
                 raise ValueError("未知 Bot 操作")
 
+    async def _execute(
+        self,
+        bot: Bot,
+        op_id: str,
+        role: str,
+        connection_id: str,
+        side: Literal["buy", "sell"],
+        quantity: Decimal,
+        reduce_only: bool,
+        reference_price: Decimal,
+    ) -> OrderResult:
+        account = self.store.connection(connection_id)
+        spec = await self.markets.spec(account.provider, bot.parameters.symbol)
+        if quantity_floor(quantity, spec.quantity_step) != quantity:
+            raise ValueError("实际数量不符合该交易所精度，请在交易所处理残余数量")
+        book = await self.markets.book(account.provider, bot.parameters.symbol, refresh=True)
+        if not book.fresh():
+            raise ValueError("盘口已过期")
+        slippage = bot.parameters.slippage_bps / 10000
+        raw = reference_price * (1 + slippage if side == "buy" else 1 - slippage)
+        price = bounded_price(raw, spec, side)
+        if not reduce_only and (quantity < spec.min_quantity or quantity * price < spec.min_notional):
+            raise ValueError("实际成交数量低于下一腿最小下单限制，保留持仓并告警")
+        client_id = uuid.uuid4().hex if account.provider == Provider.ARCUS else str(secrets.randbits(47))
+        intent = OrderIntent(
+            connection_id=connection_id,
+            symbol=bot.parameters.symbol,
+            side=side,
+            quantity=quantity,
+            limit_price=price,
+            reduce_only=reduce_only,
+            client_id=client_id,
+        )
+        adapter = self.accounts.adapter(connection_id)
+        prepared = await adapter.prepare(intent)
+        order_id = self.store.add_order(
+            op_id, bot.id, role, intent, self.accounts.secrets.encrypt(json.dumps(prepared))
+        )
+        self.store.update_order(order_id, "submitting")
+        native_id = None
+        try:
+            native_id = await adapter.send(prepared)
+            self.store.update_order(order_id, "submitted", native_id)
+        except Exception:
+            # A send error does not establish rejection. Query the original client identity.
+            self.store.update_order(order_id, "unknown")
+        for _ in range(8):
+            try:
+                result = await adapter.lookup(intent, native_id)
+                if result.status != "unknown":
+                    self.store.apply_order_result(order_id, result)
+                    return result
+                if result.native_id is not None:
+                    native_id = result.native_id
+                    self.store.update_order(order_id, "submitted", native_id)
+            except Exception:
+                break
+            await asyncio.sleep(0.5)
+        self.store.update_order(order_id, "unknown", native_id)
+        return OrderResult(status="unknown", quantity=None, average_price=None, fee=None, native_id=native_id)
+
+    def _unresolved(self, bot_id: str) -> bool:
+        return any(o["status"] in UNRESOLVED for o in self.store.bot_orders(bot_id))
+
     async def try_open(self, bot_id: str) -> bool:
         async with self.guard:
             bot = self.store.bot(bot_id)
             if bot.state != BotState.WAITING:
+                return False
+            if self.store.bot_orders(bot_id) or self.store.positions(bot_id):
+                self.store.set_state(bot_id, BotState.ATTENTION, "已有执行记录，禁止重复建仓")
                 return False
             try:
                 preview = await self.preview(bot)
@@ -142,123 +284,190 @@ class Runtime:
                         f"当前价差 {preview.spread_pct:.4f}% / 条件 {bot.parameters.threshold_pct}%",
                     )
                     return False
-                long = self.store.connection(bot.parameters.long_connection_id)
-                short = self.store.connection(bot.parameters.short_connection_id)
-                for account, price in [(long, preview.long_price), (short, preview.short_price)]:
-                    needed = preview.quantity * price * (1 + account.paper_fee_bps / 10000)
-                    if self.store.account_available(account) < needed:
-                        raise ValueError(f"{account.name} 模拟可用资金不足（按 1× 名义敞口预留）")
+                for connection_id in [bot.parameters.long_connection_id, bot.parameters.short_connection_id]:
+                    await self._check_inventory(connection_id, bot.parameters.symbol)
+                    if self.accounts.snapshots[connection_id].available < bot.parameters.target_usd:
+                        raise ValueError("账户可用抵押资产不足以覆盖单侧目标金额，请调整金额")
             except ValueError as exc:
                 self.store.set_state(bot_id, BotState.WAITING, str(exc))
                 self.store.alert(str(exc), bot_id, "warning")
                 return False
-            op_id = self.store.operation(bot_id, "paper_open")
-            with self.store.transaction() as db:
-                for account, role, side, price in [
-                    (long, "long", "buy", preview.long_price),
-                    (short, "short", "sell", preview.short_price),
-                ]:
-                    fee = preview.quantity * price * account.paper_fee_bps / 10000
-                    db.execute(
-                        insert(positions).values(
-                            bot_id=bot.id,
-                            role=role,
-                            connection_id=account.id,
-                            symbol=bot.parameters.symbol,
-                            quantity=str(preview.quantity),
-                            entry_price=str(price),
-                            opening_fee=str(fee),
-                        )
-                    )
-                    db.execute(
-                        insert(fills).values(
-                            id=uuid.uuid4().hex,
-                            operation_id=op_id,
-                            bot_id=bot.id,
-                            connection_id=account.id,
-                            role=role,
-                            side=side,
-                            quantity=str(preview.quantity),
-                            price=str(price),
-                            fee=str(fee),
-                            realized_pnl="0",
-                            created_at=time.time(),
-                        )
-                    )
-                self.store.set_state(bot.id, BotState.HOLDING, "两腿模拟建仓完成；等待用户平仓", db)
-                self.store.finish_operation(op_id, "completed", "模拟双腿成交在同一事务记录", db)
-            self.store.alert(
-                f"{bot.name} 模拟建仓完成，数量 {preview.quantity} {bot.parameters.symbol}", bot.id
+            op_id = self.store.operation(bot_id, "open")
+            try:
+                first = await self._execute(
+                    bot,
+                    op_id,
+                    "long",
+                    bot.parameters.long_connection_id,
+                    "buy",
+                    preview.quantity,
+                    False,
+                    preview.long_price,
+                )
+                if first.status == "unknown":
+                    raise ValueError("做多订单结果未知，已停止后续提交；请同步订单")
+                if first.quantity is None or first.quantity == 0:
+                    raise ValueError("做多订单未成交，未提交做空订单")
+                short_account = self.store.connection(bot.parameters.short_connection_id)
+                short_spec = await self.markets.spec(short_account.provider, bot.parameters.symbol)
+                short_quantity = quantity_floor(first.quantity, short_spec.quantity_step)
+                if short_quantity <= 0:
+                    raise ValueError("第一腿成交不足第二腿最小数量，保留实际持仓并告警")
+                second = await self._execute(
+                    bot, op_id, "short", short_account.id, "sell", short_quantity, False, preview.short_price
+                )
+                if second.status == "unknown" or second.quantity != first.quantity:
+                    raise ValueError("两腿实际成交数量不匹配，需要处理；不会自动追加或止损")
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, ValueError) else "执行失败，请同步原订单和实际持仓"
+                self.store.finish_operation(
+                    op_id, "unknown" if self._unresolved(bot.id) else "attention", message
+                )
+                self.store.set_state(bot.id, BotState.ATTENTION, message)
+                self.store.alert(message, bot.id, "error")
+                return False
+            self.store.finish_operation(op_id, "completed", "两腿原生成交已确认")
+            self.store.set_state(
+                bot.id,
+                BotState.HOLDING,
+                f"两腿已建仓 {first.quantity} {bot.parameters.symbol} / 目标 {preview.quantity}；不自动追加",
             )
+            self.store.alert(f"{bot.name} 建仓完成", bot.id)
             return True
 
     async def _close(self, bot: Bot) -> None:
+        if self._unresolved(bot.id):
+            raise ValueError("有未确认订单，请先同步订单")
         allocated = self.store.positions(bot.id)
         if not allocated:
-            if bot.state == BotState.CLOSED:
-                return
-            self.store.set_state(bot.id, BotState.STOPPED, "没有持仓；已取消等待并停止")
+            if bot.state != BotState.CLOSED:
+                self.store.set_state(bot.id, BotState.STOPPED, "没有分配持仓，已停止")
             return
-        quotes = []
-        for position in allocated:
-            account = self.store.connection(position.connection_id)
-            book = await self.markets.book(account.provider, position.symbol, refresh=True)
+        for p in allocated:
+            await self._check_inventory(p.connection_id, p.symbol)
+        references = {}
+        for p in allocated:
+            account = self.store.connection(p.connection_id)
+            book = await self.markets.book(account.provider, p.symbol, refresh=True)
             if not book.fresh():
                 raise ValueError("平仓报价已过期")
-            side = "sell" if position.role == "long" else "buy"
-            quotes.append((position, account, side, book.vwap(side, position.quantity)))
-        op_id = self.store.operation(bot.id, "paper_close")
-        with self.store.transaction() as db:
-            for position, account, side, price in quotes:
-                sign = Decimal(1) if position.role == "long" else Decimal(-1)
-                realized = (price - position.entry_price) * position.quantity * sign
-                fee = position.quantity * price * account.paper_fee_bps / 10000
-                db.execute(
-                    insert(fills).values(
-                        id=uuid.uuid4().hex,
-                        operation_id=op_id,
-                        bot_id=bot.id,
-                        connection_id=account.id,
-                        role=position.role,
-                        side=side,
-                        quantity=str(position.quantity),
-                        price=str(price),
-                        fee=str(fee),
-                        realized_pnl=str(realized),
-                        created_at=time.time(),
-                    )
+            references[p.role] = book.vwap("sell" if p.role == "long" else "buy", p.quantity)
+        op_id = self.store.operation(bot.id, "close")
+        try:
+            for p in allocated:
+                result = await self._execute(
+                    bot,
+                    op_id,
+                    p.role,
+                    p.connection_id,
+                    "sell" if p.role == "long" else "buy",
+                    p.quantity,
+                    True,
+                    references[p.role],
                 )
-            db.execute(delete(positions).where(positions.c.bot_id == bot.id))
-            self.store.set_state(
-                bot.id, BotState.CLOSED, "此 Bot 的分配数量已模拟平仓；其他 Bot 不受影响", db
+                if result.status == "unknown":
+                    raise ValueError("平仓订单结果未知，停止后续提交，请同步订单")
+            if self.store.positions(bot.id):
+                raise ValueError("本次平仓未完全成交，保留剩余分配数量，可再次点击平仓")
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, ValueError) else "平仓执行失败，请同步订单"
+            self.store.finish_operation(
+                op_id, "unknown" if self._unresolved(bot.id) else "attention", message
             )
-            self.store.finish_operation(op_id, "completed", "模拟平仓完成", db)
-        self.store.alert(f"{bot.name} 模拟平仓完成", bot.id)
+            self.store.set_state(bot.id, BotState.ATTENTION, message)
+            self.store.alert(message, bot.id, "error")
+            return
+        self.store.finish_operation(op_id, "completed", "此 Bot 的分配数量已确认平仓")
+        self.store.set_state(bot.id, BotState.CLOSED, "平仓完成")
+        self.store.alert(f"{bot.name} 平仓完成", bot.id)
+
+    async def sync(self, bot_id: str) -> None:
+        async with self.guard:
+            for order in self.store.bot_orders(bot_id):
+                if order["status"] not in UNRESOLVED:
+                    continue
+                intent = OrderIntent.model_validate(order["intent"])
+                result = await self.accounts.adapter(order["connection_id"]).lookup(
+                    intent, order["native_id"]
+                )
+                self.store.apply_order_result(order["id"], result)
+            if self._unresolved(bot_id):
+                self.store.set_state(bot_id, BotState.ATTENTION, "原订单尚未确认，已停止新动作")
+                return
+            # Synchronization records native evidence only. It never starts another leg.
+            inventory = self.store.positions(bot_id)
+            ops = self.store.rows(operations, bot_id)
+            if not ops:
+                return
+            latest = ops[0]
+            if latest["kind"] == "close" and not inventory:
+                self.store.set_state(bot_id, BotState.CLOSED, "原平仓订单已确认完成")
+                self.store.finish_operation(latest["id"], "completed", "原平仓订单已确认")
+            elif (
+                latest["kind"] == "open"
+                and len(inventory) == 2
+                and inventory[0].quantity == inventory[1].quantity
+            ):
+                self.store.set_state(bot_id, BotState.HOLDING, "原建仓订单已确认完成")
+                self.store.finish_operation(latest["id"], "completed", "原建仓订单已确认")
+            else:
+                self.store.set_state(bot_id, BotState.ATTENTION, "订单已同步，请查看实际成交与剩余持仓")
+                self.store.finish_operation(latest["id"], "attention", "实际持仓需要处理")
 
     async def pnl(self, bot_id: str) -> dict[str, Any]:
-        bot_fills = self.store.rows(fills, bot_id)
-        fees = sum((Decimal(f["fee"]) for f in bot_fills), Decimal(0))
-        realized = sum((Decimal(f["realized_pnl"]) for f in bot_fills), Decimal(0))
+        history = self.store.rows(fills, bot_id)
+        fees = (
+            sum((Decimal(f["fee"]) for f in history), Decimal(0))
+            if all(f["fee"] is not None for f in history)
+            else None
+        )
+        realized = sum((Decimal(f["realized_pnl"]) for f in history), Decimal(0))
         unrealized = Decimal(0)
         error: str | None = None
-        for pos in self.store.positions(bot_id):
+        if self._unresolved(bot_id):
+            error = "有未确认订单，持仓和盈亏尚不能完整确认"
+        for p in self.store.positions(bot_id):
+            snapshot = self.accounts.snapshots.get(p.connection_id)
+            if (
+                snapshot is None
+                or time.time() - snapshot.received_at > 30
+                or p.connection_id in self.accounts.errors
+            ):
+                error = "账户持仓尚未同步，盈亏等待确认"
+            else:
+                expected = sum(
+                    (
+                        owned.quantity * (1 if owned.role == "long" else -1)
+                        for owned in self.store.positions()
+                        if owned.connection_id == p.connection_id and owned.symbol == p.symbol
+                    ),
+                    Decimal(0),
+                )
+                native = sum(
+                    (owned.quantity for owned in snapshot.positions if owned.symbol == p.symbol), Decimal(0)
+                )
+                if expected != native:
+                    error = "账户实际持仓与分配数量不一致，盈亏等待确认"
             try:
-                account = self.store.connection(pos.connection_id)
-                book = await self.markets.book(account.provider, pos.symbol)
+                account = self.store.connection(p.connection_id)
+                book = await self.markets.book(account.provider, p.symbol)
                 if not book.fresh():
                     raise ValueError("行情已过期")
-                price = book.vwap("sell" if pos.role == "long" else "buy", pos.quantity)
-                sign = Decimal(1) if pos.role == "long" else Decimal(-1)
-                unrealized += (price - pos.entry_price) * pos.quantity * sign
+                unrealized += (
+                    (book.vwap("sell" if p.role == "long" else "buy", p.quantity) - p.entry_price)
+                    * p.quantity
+                    * (1 if p.role == "long" else -1)
+                )
             except ValueError as exc:
                 error = str(exc)
         return {
             "realized": str(realized),
-            "fees": str(fees),
+            "fees": str(fees) if fees is not None else None,
             "unrealized": str(unrealized) if error is None else None,
-            "net": str(realized + unrealized - fees) if error is None else None,
+            "gross": str(realized + unrealized) if error is None else None,
+            "net": str(realized + unrealized - fees) if error is None and fees is not None else None,
             "unavailable_reason": error,
             "funding": None,
-            "funding_status": "模拟模式未模拟资金费",
-            "valuation": "模拟 USD；跨报价币种按面值假设，仅供体验",
+            "funding_status": "资金费归属尚未接入",
+            "valuation": "原生成交价差；费用和资金费缺失时总收益未知",
         }

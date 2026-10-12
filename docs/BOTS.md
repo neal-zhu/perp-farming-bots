@@ -15,7 +15,7 @@ Bot 1：Arcus A 做多 BTC，Arcus B 做空 BTC
 Bot 2：Arcus A 做多 ETH，Lighter RH C 做空 ETH
 ```
 
-两条腿可以来自同一交易所，但必须来自不同账户实例。真实账户接入时，同一个原生账户换 API key 不能被当成第二个独立账户。当前 MVP 只使用模拟账户身份；Arcus 原生接入仍待实现。
+两条腿可以来自同一交易所，但必须来自不同账户实例。真实账户接入时，同一个原生账户换 API key 不能被当成第二个独立账户。当前使用 Arcus 钱包地址 + 子账户编号，或 Lighter 部署 + Account Index，作为原生账户身份；重复绑定同一原生账户会被拒绝。
 
 当前 Bot 的主要字段：
 
@@ -24,9 +24,9 @@ Bot 2：Arcus A 做多 ETH，Lighter RH C 做空 ETH
 | id | 独立 Bot 身份 |
 | request_id | 创建幂等身份；重复请求不新建另一个 Bot |
 | strategy | 首版 spread_hedging；其他策略明确未开放 |
-| parameters | 做多/做空账户实例 ID、币种、价差条件、金额 |
+| parameters | 做多/做空账户实例 ID、币种、价差条件、金额和最大滑点 |
 | state / reason | 待启动、等待、持仓、暂停、停止、已关闭及原因 |
-| positions / fills / operations | 归属于这个 Bot 的持仓分配、成交和操作记录 |
+| positions / fills / orders / operations | 归属于这个 Bot 的持仓分配、成交和操作记录 |
 
 暂停停止新的策略动作。停止结束策略驱动但保留持仓。停止并平仓只处理所选 Bot 的分配数量。积分通常属于平台账户，不能自动归为单个 Bot 的积分。
 

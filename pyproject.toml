@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "perp-farming-bots"
 version = "0.1.0"
-description = "Self-hosted perpetual strategy bots with transparent paper execution"
+description = "Self-hosted perpetual strategy bots with native exchange execution"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "Apache-2.0"
@@ -14,8 +14,8 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "httpx>=0.28,<1",
   "cryptography>=45,<47",
-  "ccxt>=4.5,<5",
   "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git@04bee9ba9811b87ef1cccc568e7f590b5fe649bb",
+  "truststore>=0.10,<1",
 ]
 
 [project.scripts]

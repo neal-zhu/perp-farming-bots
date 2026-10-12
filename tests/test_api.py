@@ -1,54 +1,46 @@
-import asyncio
-from pathlib import Path
-
+from conftest import FixtureAccounts, FixtureMarkets, connection_value
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from perp_farming_bots.api import register_routes
-from perp_farming_bots.markets import Markets
 from perp_farming_bots.notifications import Notifications
 from perp_farming_bots.runtime import Runtime
 from perp_farming_bots.security import Secrets
 from perp_farming_bots.store import Store
 
 
-def test_local_api_flow_and_same_venue_bindings(tmp_path: Path):
+def test_native_account_api_has_no_virtual_funds_or_exposed_keys(tmp_path):
     store = Store(tmp_path / "api.db")
     secrets = Secrets(tmp_path)
-    runtime = Runtime(store, Markets())
+    markets = FixtureMarkets()
+    accounts = FixtureAccounts(store, markets, secrets)
+    runtime = Runtime(store, markets, accounts)
     notifications = Notifications(store, secrets)
     app = FastAPI()
     register_routes(app, store, runtime, notifications)
     with TestClient(app) as client:
-        assert client.get("/api/connections").status_code == 200
-        account_a = client.post(
-            "/api/connections", json={"name": "同场馆 A", "provider": "demo_a", "account_ref": "A"}
-        ).json()
-        account_b = client.post(
-            "/api/connections", json={"name": "同场馆 B", "provider": "demo_a", "account_ref": "B"}
-        ).json()
-        body = {
-            "request_id": "stable-request-id",
-            "name": "同场馆对冲",
-            "parameters": {
-                "long_connection_id": account_a["id"],
-                "short_connection_id": account_b["id"],
-                "symbol": "BTC",
-                "threshold_pct": "-0.1",
-                "target_usd": "1000",
-            },
-        }
-        first = client.post("/api/bots", json=body)
-        assert first.status_code == 201
-        assert client.post("/api/bots", json=body).json()["id"] == first.json()["id"]
-        bot_id = first.json()["id"]
-        assert client.post(f"/api/bots/{bot_id}/commands", json={"action": "start"}).status_code == 200
-        assert client.post("/api/bots", json={**body, "execution": "live"}).status_code == 422
-        assert client.get("/api/catalog").json()["live_trading"] is False
-        assert client.get("/api/points").json()[0]["value"] is None
-        assert client.delete(f"/api/connections/{account_a['id']}").status_code == 400
-        assert (
-            client.post(f"/api/bots/{bot_id}/commands", json={"action": "stop"}).json()["state"] == "stopped"
+        assert client.get("/api/connections").json() == []
+        assert client.get("/api/catalog").json()["execution"] == "native"
+        assert all(
+            p["id"] not in {"demo_a", "demo_b"} for p in client.get("/api/catalog").json()["providers"]
         )
-    asyncio.run(notifications.stop())
+        value = connection_value().model_dump(mode="json")
+        value["api_private_key"] = "22" * 32
+        account = client.post("/api/connections", json=value)
+        assert account.status_code == 201
+        assert "api_private_key" not in account.json()
+        assert "credentials" not in account.json()
+        assert "paper_balance" not in account.json()
+        listing = client.get("/api/connections").json()
+        assert listing[0]["snapshot"]["available"] == "10000"
+        assert listing[0]["account_ref"].endswith(":0")
+        assert client.get("/api/points").json()[0]["value"] is None
+        assert client.post("/api/connections", json={**value, "paper_balance": "10000"}).status_code == 422
+        assert client.post("/api/connections", json={**value, "provider": "demo_a"}).status_code == 422
+        invalid = client.post("/api/connections", json={**value, "account_index": 10})
+        assert invalid.status_code == 422
+        assert value["api_private_key"] not in invalid.text
+    import asyncio
+
+    asyncio.run(markets.close())
     store.close()

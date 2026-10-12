@@ -16,6 +16,8 @@ Checked: 2026-10-12, Asia/Shanghai. This report was prepared independently from 
 
 Decision: directly use the official SDK behind a narrow application adapter for RH/Core. Serialize the necessary account/key signing resources; independently implement durable order lookup, settlement evidence and operation continuation.
 
+Follow-up: the real execution milestone successfully fetched Arcus official docs and public books. See [native protocol evidence](native-execution.md) for current implemented paths and validation limits. Earlier access failures below are historical findings.
+
 ## Arcus public repositories
 
 The [official Arcus organization repository list](https://github.com/orgs/arcus-xyz/repositories) was fetched through GitHub's API. The public list returned:

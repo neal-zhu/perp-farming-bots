@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .models import PROVIDER_NAMES, STRATEGIES, BotCreate, ConnectionCreate, Provider
+from .models import PROVIDER_NAMES, STRATEGIES, TRADING_PROVIDERS, BotCreate, ConnectionCreate, Provider
 from .notifications import Notifications
 from .runtime import Runtime
 from .store import Store, alerts, fills, operations
@@ -17,17 +19,27 @@ class Command(BaseModel):
 
 
 def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications: Notifications) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(_request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [{"loc": error["loc"], "msg": error["msg"]} for error in exc.errors()]},
+        )
+
     @app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError):
-        from fastapi.responses import JSONResponse
-
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        message = (
+            "; ".join(error["msg"] for error in exc.errors())
+            if isinstance(exc, ValidationError)
+            else str(exc)
+        )
+        return JSONResponse(status_code=400, content={"detail": message})
 
     @app.get("/health")
     def health():
         return {
             "status": "ok",
-            "execution": "paper_only",
+            "execution": "native",
             "last_tick": runtime.last_tick,
             "loop_alive": runtime.last_tick is not None and time.time() - runtime.last_tick < 60,
         }
@@ -36,13 +48,13 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
     def catalog():
         return {
             "strategies": STRATEGIES,
-            "execution": "paper_only",
-            "live_trading": False,
+            "execution": "native",
+            "live_trading": True,
             "providers": [
                 {
                     "id": provider.value,
                     "name": PROVIDER_NAMES[provider],
-                    "public_data_implemented": provider != Provider.ARCUS,
+                    "account_implemented": provider in TRADING_PROVIDERS,
                 }
                 for provider in Provider
             ],
@@ -53,15 +65,20 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
         return [
             {
                 **c.model_dump(mode="json"),
-                "execution": "paper",
-                "available_paper_usd": str(store.account_available(c)),
+                **runtime.accounts.view(c.id),
             }
             for c in store.connections()
         ]
 
     @app.post("/api/connections", status_code=201)
-    def create_connection(value: ConnectionCreate):
-        return store.add_connection(value).model_dump(mode="json")
+    async def create_connection(value: ConnectionCreate):
+        async with runtime.guard:
+            return (await runtime.accounts.add(value)).model_dump(mode="json")
+
+    @app.post("/api/connections/{connection_id}/refresh")
+    async def refresh_connection(connection_id: str):
+        await runtime.accounts.refresh(connection_id)
+        return runtime.accounts.view(connection_id)
 
     @app.delete("/api/connections/{connection_id}")
     async def remove_connection(connection_id: str):
@@ -103,6 +120,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
             "pnl": await runtime.pnl(bot_id),
             "positions": [p.model_dump(mode="json") for p in store.positions(bot_id)],
             "fills": store.rows(fills, bot_id),
+            "orders": store.bot_orders(bot_id),
             "operations": store.rows(operations, bot_id),
         }
 
@@ -134,7 +152,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
                 "name": c.name,
                 "value": None,
                 "status": "unavailable",
-                "reason": "尚未接入官方积分读取；模拟交易不产生官方积分",
+                "reason": "尚未接入官方积分读取",
             }
             for c in store.connections()
         ]

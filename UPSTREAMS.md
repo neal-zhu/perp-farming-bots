@@ -4,8 +4,9 @@ This repository now includes independently written application code, tests and p
 
 | Upstream | Role | Verified license | Intended use |
 | --- | --- | --- | --- |
-| [elliottech/lighter-python](https://github.com/elliottech/lighter-python) | Lighter/RH public SDK | Apache-2.0 source LICENSE | Installed pinned SDK; public read path, local native signer import checked; not live certified |
-| [ccxt/ccxt](https://github.com/ccxt/ccxt) | Other REST/WS connectors | MIT | Installed for public reads; not live certified |
+| [elliottech/lighter-python](https://github.com/elliottech/lighter-python) | Lighter/RH public SDK | Apache-2.0 source LICENSE | Installed pinned native signing SDK; real-order code path, not funded-order certified |
+| [ccxt/ccxt](https://github.com/ccxt/ccxt) | Other REST/WS connectors | MIT | Evaluated for later adapters; not currently a runtime dependency |
+| [sethmlarson/truststore](https://github.com/sethmlarson/truststore) | OS certificate trust | MIT | Explicit HTTPX SSLContext |
 | [zauberzeug/nicegui](https://github.com/zauberzeug/nicegui) | Browser UI | MIT | Dependency |
 | [fastapi/fastapi](https://github.com/fastapi/fastapi) | HTTP/lifecycle | MIT | NiceGUI dependency and application routes |
 | [sqlalchemy/sqlalchemy](https://github.com/sqlalchemy/sqlalchemy) | Persistence | MIT | Dependency |
@@ -20,4 +21,4 @@ If public code is copied rather than imported as a dependency, append its exact 
 
 SDK-provided referral/builder/integrator defaults are reviewed separately from code licenses. The product must not add hidden referral links or fees. Disable optional defaults explicitly; where their absence cannot be verified, do not certify that adapter for live execution.
 
-The Lighter source LICENSE is Apache-2.0, while the pinned pyproject metadata labels its license as NoLicense. This discrepancy is recorded rather than silently treating package metadata as a license grant; source LICENSE and any native artifact notices need to be retained for distribution. Current application uses SDK read methods, never its trading/referral/integrator write functions.
+The Lighter source LICENSE is Apache-2.0, while the pinned pyproject metadata labels its license as NoLicense. This discrepancy is recorded rather than silently treating package metadata as a license grant; source LICENSE and any native artifact notices need to be retained for distribution. Current application uses the native signer to prepare user-selected orders, and independently submits journaled native requests. No referral or integrator write function is called. Arcus signing is independently implemented from the official protocol documentation; its spot SDK supplies no perpetual execution code.

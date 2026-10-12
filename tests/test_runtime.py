@@ -1,236 +1,201 @@
-import time
-import uuid
 from decimal import Decimal
 
 import pytest
+from conftest import connection_value
+from pydantic import ValidationError
 
-from perp_farming_bots.markets import Markets
-from perp_farming_bots.models import BotCreate, BotState, ConnectionCreate, HedgeParameters, Provider
-from perp_farming_bots.runtime import Runtime
-from perp_farming_bots.store import Store, fills
-
-
-@pytest.fixture
-def system(tmp_path):
-    store = Store(tmp_path / "test.db")
-    runtime = Runtime(store, Markets())
-    yield store, runtime
-    store.close()
+from perp_farming_bots.models import BotCreate, BotState, HedgeParameters, Provider
+from perp_farming_bots.runtime import Runtime, bounded_price, common_step
+from perp_farming_bots.store import fills
 
 
-def accounts(store, same_venue=False, balance="10000"):
-    return (
-        store.add_connection(
-            ConnectionCreate(
-                name="账户 A", provider=Provider.DEMO_A, account_ref="A", paper_balance=Decimal(balance)
-            )
-        ),
-        store.add_connection(
-            ConnectionCreate(
-                name="账户 B",
-                provider=Provider.DEMO_A if same_venue else Provider.DEMO_B,
-                account_ref="B",
-                paper_balance=Decimal(balance),
-            )
-        ),
-    )
-
-
-def create_bot(store, long, short, amount="1000", threshold="0.1", request_id=None):
+def make_bot(store, a, b, *, name="bot", request="request-0001", amount="1000"):
     return store.add_bot(
         BotCreate(
-            request_id=request_id or uuid.uuid4().hex,
-            name="测试 Bot",
+            request_id=request,
+            name=name,
             parameters=HedgeParameters(
-                long_connection_id=long.id,
-                short_connection_id=short.id,
+                long_connection_id=a.id,
+                short_connection_id=b.id,
                 symbol="BTC",
+                threshold_pct=Decimal("-0.1"),
                 target_usd=Decimal(amount),
-                threshold_pct=Decimal(threshold),
             ),
         )
     )
 
 
-async def test_two_bots_close_only_own_allocations(system):
-    store, runtime = system
-    long, short = accounts(store)
-    a, b = create_bot(store, long, short), create_bot(store, long, short, amount="2000")
-    await runtime.command(a.id, "start")
-    await runtime.command(b.id, "start")
-    assert await runtime.try_open(a.id)
-    assert await runtime.try_open(b.id)
-    before = store.positions(b.id)
-    assert len(store.positions()) == 4
-    await runtime.command(a.id, "close")
-    assert store.bot(a.id).state == BotState.CLOSED
-    assert store.positions(b.id) == before
-    assert len(store.positions()) == 2
-    assert len(store.rows(fills, a.id)) == 4
-    await runtime.command(a.id, "close")
-    assert len(store.rows(fills, a.id)) == 4
-
-
-async def test_two_accounts_at_same_venue_can_hedge(system):
-    store, runtime = system
-    long, short = accounts(store, same_venue=True)
-    bot = create_bot(store, long, short, threshold="-0.1")
+async def open_bot(store, runtime, a, b, **kwargs):
+    bot = make_bot(store, a, b, **kwargs)
     await runtime.command(bot.id, "start")
     assert await runtime.try_open(bot.id)
-    assert {p.connection_id for p in store.positions(bot.id)} == {long.id, short.id}
+    return store.bot(bot.id)
 
 
-def test_one_account_cannot_be_both_legs(system):
-    store, _ = system
-    long, _ = accounts(store)
-    with pytest.raises(ValueError, match="不同账户实例"):
-        create_bot(store, long, long)
+async def test_same_venue_accounts_and_independent_bot_close(env):
+    store, runtime, a, b = env
+    assert a.provider == b.provider == Provider.ARCUS
+    assert a.account_ref != b.account_ref
+    one = await open_bot(store, runtime, a, b)
+    two = await open_bot(store, runtime, a, b, request="request-0002", name="second")
+    owned_two = store.positions(two.id)
+    await runtime.command(one.id, "close")
+    assert store.bot(one.id).state == BotState.CLOSED
+    assert store.positions(one.id) == []
+    assert store.positions(two.id) == owned_two
+    assert runtime.accounts.adapter(a.id).net == owned_two[0].quantity
+    assert all(order.reduce_only for order in runtime.accounts.adapter(a.id).sent[2:])
 
 
-def test_duplicate_native_identity_is_rejected(system):
-    store, _ = system
-    accounts(store)
-    with pytest.raises(ValueError, match="原生账户身份"):
-        store.add_connection(
-            ConnectionCreate(name="another API key", provider=Provider.DEMO_A, account_ref="A")
-        )
+async def test_partial_first_leg_sizes_peer_from_actual_fill(env):
+    store, runtime, a, b = env
+    runtime.accounts.adapter(a.id).fraction = Decimal("0.5")
+    bot = await open_bot(store, runtime, a, b, amount="120.002")
+    assert store.positions(bot.id)[0].quantity == Decimal("0.001")
+    assert runtime.accounts.adapter(b.id).sent[0].quantity == Decimal("0.001")
+    assert "目标 0.002" in bot.reason
 
 
-async def test_opposite_inventory_is_rejected(system):
-    store, runtime = system
-    long, short = accounts(store)
-    a = create_bot(store, long, short)
-    await runtime.command(a.id, "start")
-    await runtime.try_open(a.id)
-    reversed_bot = create_bot(store, short, long, threshold="-1")
-    with pytest.raises(ValueError, match="相反方向"):
-        await runtime.command(reversed_bot.id, "start")
-    assert not store.positions(reversed_bot.id)
-
-
-async def test_pause_and_stop_do_not_flatten(system):
-    store, runtime = system
-    long, short = accounts(store)
-    bot = create_bot(store, long, short)
+async def test_peer_partial_fill_retains_actual_exposure_without_risk_trade(env):
+    store, runtime, a, b = env
+    runtime.accounts.adapter(b.id).fraction = Decimal("0.5")
+    bot = make_bot(store, a, b, amount="120.002")
     await runtime.command(bot.id, "start")
-    await runtime.try_open(bot.id)
-    original = store.positions(bot.id)
-    await runtime.command(bot.id, "pause")
-    assert store.positions(bot.id) == original
-    await runtime.command(bot.id, "resume")
-    assert store.bot(bot.id).state == BotState.HOLDING
-    await runtime.command(bot.id, "stop")
-    assert store.positions(bot.id) == original
-    assert store.bot(bot.id).state == BotState.STOPPED
+    assert not await runtime.try_open(bot.id)
+    assert store.bot(bot.id).state == BotState.ATTENTION
+    assert len(runtime.accounts.adapter(a.id).sent) == len(runtime.accounts.adapter(b.id).sent) == 1
+    assert sorted(p.quantity for p in store.positions(bot.id)) == [Decimal("0.001"), Decimal("0.002")]
 
 
-async def test_funds_admission_is_account_scoped(system):
-    store, runtime = system
-    long, short = accounts(store, balance="1500")
-    a, b = create_bot(store, long, short), create_bot(store, long, short)
-    await runtime.command(a.id, "start")
-    await runtime.command(b.id, "start")
-    assert await runtime.try_open(a.id)
-    assert not await runtime.try_open(b.id)
-    assert not store.positions(b.id)
-    assert "模拟可用资金不足" in store.bot(b.id).reason
-
-
-def test_create_is_idempotent_and_rejects_changed_payload(system):
-    store, _ = system
-    long, short = accounts(store)
-    a = create_bot(store, long, short, request_id="request-123")
-    b = create_bot(store, long, short, request_id="request-123")
-    assert a.id == b.id
-    with pytest.raises(ValueError, match="不同 Bot 参数"):
-        create_bot(store, long, short, amount="2000", request_id="request-123")
-    assert len(store.bots()) == 1
-
-
-async def test_expired_quotes_do_not_produce_zero_pnl(system, monkeypatch):
-    store, runtime = system
-    long, short = accounts(store)
-    bot = create_bot(store, long, short)
+async def test_unknown_first_order_does_not_send_peer_or_retry(env):
+    store, runtime, a, b = env
+    runtime.accounts.adapter(a.id).unknown = True
+    bot = make_bot(store, a, b)
     await runtime.command(bot.id, "start")
-    await runtime.try_open(bot.id)
-    old_fetch = runtime.markets._fetch
-
-    async def expired(provider, symbol):
-        book = await old_fetch(provider, symbol)
-        return book.model_copy(update={"received_at": time.time() - 100})
-
-    runtime.markets.cache.clear()
-    monkeypatch.setattr(runtime.markets, "_fetch", expired)
-    pnl = await runtime.pnl(bot.id)
-    assert pnl["net"] is None
-    assert pnl["unrealized"] is None
-    assert pnl["unavailable_reason"] == "行情已过期"
-
-
-async def test_restart_preserves_positions_and_does_not_reopen(tmp_path):
-    path = tmp_path / "persist.db"
-    first = Store(path)
-    long, short = accounts(first)
-    bot = create_bot(first, long, short)
-    runtime = Runtime(first, Markets())
-    await runtime.command(bot.id, "start")
-    await runtime.try_open(bot.id)
-    quantities = [p.quantity for p in first.positions(bot.id)]
-    first.close()
-    second = Store(path)
-    recovered = Runtime(second, Markets())
-    await recovered.start()
-    assert second.bot(bot.id).state == BotState.HOLDING
-    assert not await recovered.try_open(bot.id)
-    assert [p.quantity for p in second.positions(bot.id)] == quantities
-    assert len(second.rows(fills, bot.id)) == 2
-    await recovered.stop()
-    second.close()
-
-
-async def test_arcus_is_explicitly_unavailable(system):
-    store, runtime = system
-    arcus = store.add_connection(ConnectionCreate(name="Arcus A", provider=Provider.ARCUS, account_ref="A"))
-    other = store.add_connection(ConnectionCreate(name="Arcus B", provider=Provider.ARCUS, account_ref="B"))
-    bot = create_bot(store, arcus, other)
-    with pytest.raises(ValueError, match="尚未接入"):
+    assert not await runtime.try_open(bot.id)
+    assert len(runtime.accounts.adapter(a.id).sent) == 1
+    assert runtime.accounts.adapter(b.id).sent == []
+    assert (await runtime.pnl(bot.id))["net"] is None
+    assert not await runtime.try_open(bot.id)
+    with pytest.raises(ValueError):
         await runtime.command(bot.id, "start")
-    assert not store.rows(fills)
+    runtime.accounts.adapter(a.id).unknown = False
+    await runtime.sync(bot.id)
+    await runtime.sync(bot.id)
+    assert len(store.positions(bot.id)) == 1
+    assert len(store.rows(fills, bot.id)) == 1
+    assert runtime.accounts.adapter(b.id).sent == []
 
 
-async def test_mixed_quote_sources_are_labeled_per_leg(system, monkeypatch):
-    store, runtime = system
-    long = store.add_connection(ConnectionCreate(name="虚构", provider=Provider.DEMO_A, account_ref="A"))
-    short = store.add_connection(ConnectionCreate(name="公共", provider=Provider.LIGHTER, account_ref="B"))
-    old_fetch = runtime.markets._fetch
+async def test_lost_send_ack_queries_original_without_duplicate_submission(env):
+    store, runtime, a, b = env
+    runtime.accounts.adapter(a.id).raise_after_send = True
+    bot = await open_bot(store, runtime, a, b)
+    assert len(runtime.accounts.adapter(a.id).sent) == 1
+    assert len(store.positions(bot.id)) == 2
 
-    async def quotes(provider, symbol):
-        book = await old_fetch(Provider.DEMO_A, symbol)
-        return (
-            book
-            if provider == Provider.DEMO_A
-            else book.model_copy(update={"provider": Provider.LIGHTER, "source": "公共盘口 · 模拟成交"})
+
+async def test_partial_close_retains_remaining_allocation_and_retry_closes_only_that(env):
+    store, runtime, a, b = env
+    bot = await open_bot(store, runtime, a, b, amount="120.002")
+    runtime.accounts.adapter(a.id).fraction = Decimal("0.5")
+    await runtime.command(bot.id, "close")
+    assert store.bot(bot.id).state == BotState.ATTENTION
+    remaining = store.positions(bot.id)
+    assert len(remaining) == 1 and remaining[0].quantity == Decimal("0.001")
+    runtime.accounts.adapter(a.id).fraction = Decimal(1)
+    await runtime.command(bot.id, "close")
+    assert store.bot(bot.id).state == BotState.CLOSED
+    assert runtime.accounts.adapter(a.id).sent[-1].quantity == Decimal("0.001")
+    assert runtime.accounts.adapter(a.id).sent[-1].reduce_only is True
+
+
+async def test_pause_stop_preserve_positions_and_direction_conflict(env):
+    store, runtime, a, b = env
+    bot = await open_bot(store, runtime, a, b)
+    owned = store.positions(bot.id)
+    await runtime.command(bot.id, "pause")
+    await runtime.command(bot.id, "resume")
+    await runtime.command(bot.id, "stop")
+    assert store.positions(bot.id) == owned
+    opposing = make_bot(store, b, a, request="other-request")
+    with pytest.raises(ValueError, match="相反方向"):
+        await runtime.command(opposing.id, "start")
+
+
+async def test_external_inventory_and_orders_block_submission(env):
+    store, runtime, a, b = env
+    bot = make_bot(store, a, b)
+    runtime.accounts.adapter(a.id).net = Decimal("0.1")
+    with pytest.raises(ValueError, match="实际持仓"):
+        await runtime.command(bot.id, "start")
+    runtime.accounts.adapter(a.id).net = Decimal(0)
+    runtime.accounts.adapter(a.id).external_orders = [{"id": "external"}]
+    with pytest.raises(ValueError, match="其他未成交委托"):
+        await runtime.command(bot.id, "start")
+    assert runtime.accounts.adapter(a.id).sent == []
+
+
+async def test_stale_quotes_and_unknown_fee_remain_explicit(env):
+    store, runtime, a, b = env
+    bot = await open_bot(store, runtime, a, b)
+    runtime.markets.stale = True
+    assert (await runtime.pnl(bot.id))["unrealized"] is None
+    assert (await runtime.pnl(bot.id))["net"] is None
+    assert (await runtime.pnl(bot.id))["funding"] is None
+
+
+async def test_request_id_and_native_account_identity_are_unique(env):
+    store, runtime, a, b = env
+    bot = make_bot(store, a, b)
+    assert make_bot(store, a, b).id == bot.id
+    with pytest.raises(ValueError, match="请求 ID"):
+        make_bot(store, a, b, amount="2000")
+    with pytest.raises(ValueError, match="原生账户"):
+        await runtime.accounts.add(connection_value(0, "new key same account"))
+    with pytest.raises(ValidationError):
+        HedgeParameters(
+            long_connection_id=a.id, short_connection_id=a.id, symbol="BTC", threshold_pct=0, target_usd=100
         )
-
-    monkeypatch.setattr(runtime.markets, "_fetch", quotes)
-    preview = await runtime.preview(create_bot(store, long, short))
-    assert "多腿：虚构演示行情" in preview.source
-    assert "空腿：公共盘口" in preview.source
+    with pytest.raises(ValidationError):
+        BotCreate(request_id="future-request", name="grid", strategy="grid", parameters=bot.parameters)
 
 
-def test_unimplemented_strategy_is_rejected(system):
-    store, _ = system
-    long, short = accounts(store)
-    with pytest.raises(ValueError, match="尚未实现"):
-        BotCreate(
-            request_id="request-123",
-            name="网格",
-            strategy="grid",
-            parameters=HedgeParameters(
-                long_connection_id=long.id,
-                short_connection_id=short.id,
-                symbol="BTC",
-                target_usd=Decimal("1000"),
-                threshold_pct=Decimal("0.1"),
-            ),
-        )
+async def test_restart_does_not_repeat_completed_entry(env):
+    store, runtime, a, b = env
+    bot = await open_bot(store, runtime, a, b)
+    again = Runtime(store, runtime.markets, runtime.accounts)
+    await again.start()
+    assert not await again.try_open(bot.id)
+    await again.stop()
+    assert len(runtime.accounts.adapter(a.id).sent) == 1
+
+
+async def test_rounding_is_shared_and_price_tiers_are_applied(env):
+    _, runtime, a, _ = env
+    assert common_step(Decimal("0.003"), Decimal("0.002")) == Decimal("0.006")
+    spec = await runtime.markets.spec(a.provider, "BTC")
+    spec.tick_tiers = [{"upToPrice": "100", "tick": "0.1"}, {"tick": "0.5"}]
+    assert bounded_price(Decimal("99.99"), spec, "buy") == Decimal("100.0")
+    assert bounded_price(Decimal("100.01"), spec, "buy") == Decimal("100.5")
+
+
+async def test_signed_request_is_durable_before_send_and_private_payload_is_not_exported(env, monkeypatch):
+    store, runtime, a, b = env
+    bot = make_bot(store, a, b)
+    adapter = runtime.accounts.adapter(a.id)
+    original = adapter.send
+
+    async def check_journal(prepared):
+        records = store.bot_orders(bot.id)
+        assert len(records) == 1
+        assert records[0]["status"] == "submitting"
+        assert "payload" not in records[0]
+        raw = store.order(records[0]["id"])
+        assert "client_id" not in raw["payload"]
+        assert runtime.accounts.secrets.decrypt(raw["payload"])
+        return await original(prepared)
+
+    monkeypatch.setattr(adapter, "send", check_journal)
+    await runtime.command(bot.id, "start")
+    assert await runtime.try_open(bot.id)

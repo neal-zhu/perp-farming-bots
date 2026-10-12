@@ -13,6 +13,7 @@ from .notifications import Notifications
 from .runtime import Runtime
 from .security import Secrets
 from .store import Store
+from .trading import Accounts
 from .ui import install_ui
 
 
@@ -29,8 +30,10 @@ def main() -> None:
         handle.close()
         raise RuntimeError("已有实例使用此数据目录，请先停止旧实例") from exc
     secrets = Secrets(directory)
-    store = Store(directory / "app.db")
-    runtime = Runtime(store, Markets())
+    store = Store(directory / "app.live.db")
+    markets = Markets()
+    accounts = Accounts(store, markets, secrets)
+    runtime = Runtime(store, markets, accounts)
     notifications = Notifications(store, secrets)
     register_routes(app, store, runtime, notifications)
     install_ui(store, runtime, notifications)
@@ -47,7 +50,7 @@ def main() -> None:
 
     app.on_startup(startup)
     app.on_shutdown(shutdown)
-    logging.getLogger(__name__).info("Paper-only local prototype. Authentication design is pending.")
+    logging.getLogger(__name__).info("Native trading application. Authentication design is pending.")
     ui.run(
         host=os.environ.get("PFB_HOST", "127.0.0.1"),
         port=int(os.environ.get("PFB_PORT", "8080")),

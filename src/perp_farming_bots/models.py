@@ -3,30 +3,28 @@ from __future__ import annotations
 import time
 from decimal import Decimal
 from enum import StrEnum
-from typing import TypedDict
+from typing import Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class Provider(StrEnum):
-    DEMO_A = "demo_a"
-    DEMO_B = "demo_b"
     LIGHTER = "lighter"
     LIGHTER_RH = "lighter_robinhood"
+    ARCUS = "arcus"
     HYPERLIQUID = "hyperliquid"
     BINANCE = "binance"
-    ARCUS = "arcus"
 
 
 PROVIDER_NAMES = {
-    Provider.DEMO_A: "演示市场 A（虚构行情）",
-    Provider.DEMO_B: "演示市场 B（虚构行情）",
     Provider.LIGHTER: "Lighter Core",
     Provider.LIGHTER_RH: "Lighter Robinhood",
+    Provider.ARCUS: "Arcus",
     Provider.HYPERLIQUID: "Hyperliquid",
     Provider.BINANCE: "Binance USD-M",
-    Provider.ARCUS: "Arcus（接入开发中）",
 }
+TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH}
+SUPPORTED_ASSETS = {"BTC", "ETH", "SOL"}
 
 
 class BotState(StrEnum):
@@ -57,29 +55,48 @@ class StrictModel(BaseModel):
 class ConnectionCreate(StrictModel):
     name: str = Field(min_length=1, max_length=80)
     provider: Provider
-    account_ref: str = Field(min_length=1, max_length=120)
-    paper_balance: Decimal = Field(default=Decimal("10000"), gt=0, le=Decimal("100000000"))
-    paper_fee_bps: Decimal = Field(default=Decimal("2"), ge=0, le=Decimal("100"))
+    account_index: int = Field(ge=0, lt=2**48)
+    address: str | None = Field(default=None, pattern=r"^0x[0-9a-fA-F]{40}$")
+    api_key_index: int | None = Field(default=None, ge=0, le=254)
+    api_private_key: SecretStr = Field(min_length=32, max_length=256)
 
-    @field_validator("name", "account_ref")
+    @field_validator("name")
     @classmethod
-    def clean_string(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("名称和账户身份不能为空")
-        return value
+    def clean_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("名称不能为空")
+        return value.strip()
 
-    @field_validator("paper_balance", "paper_fee_bps")
-    @classmethod
-    def finite(cls, value: Decimal) -> Decimal:
-        if not value.is_finite():
-            raise ValueError("金额必须是有限数字")
-        return value
+    @model_validator(mode="after")
+    def valid_credentials(self) -> ConnectionCreate:
+        if self.provider not in TRADING_PROVIDERS:
+            raise ValueError("该交易所的账户接入尚未完成")
+        if self.provider == Provider.ARCUS:
+            if self.address is None or self.account_index > 9 or self.api_key_index is not None:
+                raise ValueError("Arcus 需要钱包地址和 0–9 的子账户编号，不使用 API key 编号")
+            try:
+                key = bytes.fromhex(self.api_private_key.get_secret_value().removeprefix("0x"))
+            except ValueError as exc:
+                raise ValueError("Arcus API Signing Key 必须是十六进制") from exc
+            if len(key) != 32:
+                raise ValueError("Arcus API Signing Key 必须是 32 字节")
+        elif self.api_key_index is None:
+            raise ValueError("Lighter 需要 API key 编号")
+        if self.address is not None:
+            self.address = self.address.lower()
+        return self
 
 
-class Connection(ConnectionCreate):
+class Connection(StrictModel):
     id: str
+    name: str
+    provider: Provider
+    account_index: int
+    address: str | None
+    api_key_index: int | None
+    account_ref: str
     created_at: float
+    verified_at: float
 
 
 class HedgeParameters(StrictModel):
@@ -88,6 +105,7 @@ class HedgeParameters(StrictModel):
     symbol: str = Field(min_length=1, max_length=30, pattern=r"^[A-Z0-9]+$")
     threshold_pct: Decimal = Field(ge=Decimal("-10"), le=Decimal("100"))
     target_usd: Decimal = Field(gt=0, le=Decimal("1000000"))
+    slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -95,9 +113,11 @@ class HedgeParameters(StrictModel):
         return value.strip().upper()
 
     @model_validator(mode="after")
-    def distinct_accounts(self) -> HedgeParameters:
+    def valid_pair(self) -> HedgeParameters:
         if self.long_connection_id == self.short_connection_id:
             raise ValueError("两条腿必须绑定不同账户实例；可以属于同一交易所")
+        if self.symbol not in SUPPORTED_ASSETS:
+            raise ValueError("首批支持 BTC、ETH、SOL 标准加密资产永续；其他合约等待单位核实")
         return self
 
 
@@ -111,16 +131,15 @@ class BotCreate(StrictModel):
     @classmethod
     def implemented_strategy(cls, value: str) -> str:
         if value != "spread_hedging":
-            raise ValueError("网格和剥头皮尚未实现，当前可运行跨账户价差对冲")
+            raise ValueError("网格和剥头皮尚未实现")
         return value
 
     @field_validator("name")
     @classmethod
     def clean_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
+        if not value.strip():
             raise ValueError("Bot 名称不能为空")
-        return value
+        return value.strip()
 
 
 class Bot(BotCreate):
@@ -150,9 +169,6 @@ class Book(StrictModel):
             raise ValueError("盘口为空")
         if self.bids[0].price >= self.asks[0].price:
             raise ValueError("盘口价格交叉")
-        for level in self.bids + self.asks:
-            if not level.price.is_finite() or not level.quantity.is_finite():
-                raise ValueError("盘口价格或数量无效")
         return self
 
     def fresh(self, max_age: float = 15) -> bool:
@@ -170,13 +186,33 @@ class Book(StrictModel):
                 return cost / quantity
         raise ValueError("所需数量超出当前盘口深度")
 
+    def limit_price(self, side: str, quantity: Decimal) -> Decimal:
+        remaining = quantity
+        for level in self.asks if side == "buy" else self.bids:
+            remaining -= min(level.quantity, remaining)
+            if remaining == 0:
+                return level.price
+        raise ValueError("所需数量超出当前盘口深度")
+
+
+class MarketSpec(StrictModel):
+    provider: Provider
+    symbol: str
+    native_symbol: str
+    market_id: int
+    quantity_step: Decimal = Field(gt=0)
+    price_tick: Decimal = Field(gt=0)
+    min_quantity: Decimal = Field(ge=0)
+    min_notional: Decimal = Field(ge=0)
+    tick_tiers: list[dict[str, str]] = Field(default_factory=list)
+
 
 class Preview(StrictModel):
     quantity: Decimal
     long_price: Decimal
     short_price: Decimal
     spread_pct: Decimal
-    estimated_fees: Decimal
+    estimated_fees: Decimal | None
     source: str
 
 
@@ -187,7 +223,51 @@ class Position(StrictModel):
     symbol: str
     quantity: Decimal
     entry_price: Decimal
-    opening_fee: Decimal
+    opening_fee: Decimal | None
+
+
+class NativePosition(StrictModel):
+    symbol: str
+    quantity: Decimal
+    entry_price: Decimal
+    unrealized_pnl: Decimal | None
+
+
+class AccountSnapshot(StrictModel):
+    available: Decimal
+    equity: Decimal
+    positions: list[NativePosition]
+    received_at: float
+    source: str
+
+
+class OrderIntent(StrictModel):
+    connection_id: str
+    symbol: str
+    side: Literal["buy", "sell"]
+    quantity: Decimal = Field(gt=0)
+    limit_price: Decimal = Field(gt=0)
+    reduce_only: bool
+    client_id: str
+
+
+class OrderResult(StrictModel):
+    status: str
+    quantity: Decimal | None
+    average_price: Decimal | None
+    fee: Decimal | None
+    native_id: str | None
+
+    @model_validator(mode="after")
+    def evidence(self) -> OrderResult:
+        if self.status not in {"filled", "canceled", "rejected", "unknown"}:
+            raise ValueError("未知订单状态")
+        if self.status != "unknown":
+            if self.quantity is None or self.quantity < 0 or not self.quantity.is_finite():
+                raise ValueError("终态订单缺少有效成交数量")
+            if self.quantity > 0 and (self.average_price is None or self.average_price <= 0):
+                raise ValueError("已成交订单缺少成交价格")
+        return self
 
 
 class StrategyDefinition(TypedDict):
@@ -202,18 +282,18 @@ STRATEGIES: list[StrategyDefinition] = [
         "id": "spread_hedging",
         "name": "跨账户价差对冲",
         "available": True,
-        "description": "两个账户、一个币种，价差达到条件后模拟建仓；支持同一交易所的不同账户。",
+        "description": "两个账户、一个币种，价差达到条件后建仓；支持同一交易所的不同账户。",
     },
     {
         "id": "grid",
         "name": "永续网格",
         "available": False,
-        "description": "价格区间、网格数量和预算。规则定义后再开放。",
+        "description": "价格区间、网格数量和预算。开发中。",
     },
     {
         "id": "scalping",
         "name": "剥头皮",
         "available": False,
-        "description": "明确的短线入场和出场规则。当前未实现。",
+        "description": "明确的短线入场和出场规则。开发中。",
     },
 ]

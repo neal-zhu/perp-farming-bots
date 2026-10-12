@@ -7,11 +7,13 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from nicegui import ui
+from pydantic import SecretStr
 
 from .models import (
     PROVIDER_NAMES,
     STATE_NAMES,
     STRATEGIES,
+    TRADING_PROVIDERS,
     BotCreate,
     BotState,
     ConnectionCreate,
@@ -52,12 +54,12 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     with ui.column().classes("gap-0"):
                         ui.label("Perp Farming Bots").classes("text-xl font-bold")
                         ui.label("自己的账户，自己的策略").classes("text-xs text-slate-500")
-                ui.badge("模拟交易 · 不提交真实订单", color="amber-8").classes("px-3 py-2")
+                ui.badge("连接自己的交易所账户", color="amber-8").classes("px-3 py-2")
         with ui.column().classes("w-full max-w-7xl mx-auto p-5 gap-5"):
             with ui.row().classes("w-full justify-between items-center"):
                 with ui.column().classes("gap-1"):
                     ui.label("你的交易工作台").classes("text-3xl font-bold")
-                    ui.label("先体验完整流程。公共行情与虚构演示行情会分别标注。").classes("text-slate-500")
+                    ui.label("连接账户、选择策略，统一查看持仓、交易记录与盈亏。").classes("text-slate-500")
                 ui.button("创建 Bot", icon="add", on_click=lambda: bot_dialog()).props("unelevated")
             with ui.tabs().classes("w-full bg-white rounded-xl") as tabs:
                 bots_tab = ui.tab("我的 Bots", icon="smart_toy")
@@ -69,7 +71,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
             async def action(bot_id: str, command: str):
                 try:
                     await runtime.command(bot_id, command)
-                    ui.notify("操作已完成（模拟模式）", color="positive")
+                    ui.notify("操作已完成", color="positive")
                 except (ValueError, Exception) as exc:
                     ui.notify(
                         str(exc) if isinstance(exc, ValueError) else "操作失败，请查看后台日志",
@@ -80,8 +82,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
             async def close_dialog(bot_id: str):
                 bot = store.bot(bot_id)
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-md p-6"):
-                    ui.label(f"停止并平仓：{bot.name}").classes("text-xl font-bold")
-                    ui.label("只关闭这个 Bot 的模拟持仓。其他 Bot 的数量保留。")
+                    ui.label(f"平仓：{bot.name}").classes("text-xl font-bold")
+                    ui.label("将向交易所提交减仓订单，只关闭此 Bot 已分配的数量。")
 
                     async def confirm():
                         button.disable()
@@ -90,7 +92,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
                     with ui.row().classes("w-full justify-end"):
                         ui.button("取消", on_click=dialog.close).props("flat")
-                        button = ui.button("确认模拟平仓", on_click=confirm, color="orange")
+                        button = ui.button("确认平仓", on_click=confirm, color="orange")
                 dialog.open()
 
             @ui.refreshable
@@ -100,10 +102,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     with ui.card().classes("w-full p-10 items-center gap-4"):
                         ui.icon("rocket_launch", size="48px").classes("text-emerald-600")
                         ui.label("从你的第一个 Bot 开始").classes("text-2xl font-bold")
-                        ui.label("添加两个账户实例，然后选择策略和金额。也可以先体验虚构演示。").classes(
-                            "text-slate-500"
-                        )
-                        ui.button("创建演示账户", on_click=demo_accounts, icon="play_arrow")
+                        ui.label("先连接两个交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
+                        ui.button("连接交易所账户", on_click=lambda: tabs.set_value(accounts_tab), icon="add")
                     return
                 with ui.row().classes("w-full gap-4"):
                     for label, value in [
@@ -133,9 +133,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         )
                         with ui.row().classes("gap-8"):
                             for label, value in [
-                                ("交易盈亏（未计资金费）", pnl["net"]),
+                                ("价格盈亏", pnl["gross"]),
                                 ("已实现价差", pnl["realized"]),
-                                ("模拟手续费", pnl["fees"]),
+                                ("手续费", pnl["fees"]),
                             ]:
                                 with ui.column().classes("gap-1"):
                                     ui.label(label).classes("text-xs text-slate-500")
@@ -166,6 +166,10 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                                 ui.button("停止", on_click=lambda bid=bot.id: action(bid, "stop")).props(
                                     "outline"
                                 )
+                            if bot.state == BotState.ATTENTION:
+                                ui.button(
+                                    "同步订单", icon="sync", on_click=lambda bid=bot.id: action(bid, "sync")
+                                ).props("outline")
                             if store.positions(bot.id):
                                 ui.button(
                                     "停止并平仓",
@@ -180,7 +184,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
             def detail_dialog(bot_id: str):
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-4xl p-6"):
-                    ui.label(store.bot(bot_id).name + " · 模拟成交记录").classes("text-xl font-bold")
+                    ui.label(store.bot(bot_id).name + " · 成交记录").classes("text-xl font-bold")
                     rows = [
                         {
                             **f,
@@ -199,29 +203,22 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                                 ("side", "方向"),
                                 ("quantity", "数量"),
                                 ("price", "价格"),
-                                ("fee", "模拟手续费"),
+                                ("fee", "手续费"),
                             ]
                         ],
                         rows=rows,
                     ).classes("w-full")
+                    for order in store.bot_orders(bot_id):
+                        intent = order["intent"]
+                        ui.label(
+                            f"订单 {intent['client_id']} · {intent['side']} {intent['quantity']} · {order['status']}"
+                        ).classes("text-sm")
                     for op in store.rows(operations, bot_id)[:10]:
                         ui.label(
                             f"{stamp(op['created_at'])} · {op['kind']} · {op['status']} · {op['message']}"
                         ).classes("text-sm")
                     ui.button("关闭", on_click=dialog.close)
                 dialog.open()
-
-            async def demo_accounts():
-                for provider, name in [(Provider.DEMO_A, "演示账户 A"), (Provider.DEMO_B, "演示账户 B")]:
-                    if not any(
-                        c.provider == provider and c.account_ref == "demo" for c in store.connections()
-                    ):
-                        store.add_connection(
-                            ConnectionCreate(name=name, provider=provider, account_ref="demo")
-                        )
-                ui.notify("两个虚构演示账户已添加；现在可以创建 Bot", color="positive")
-                await accounts_view.refresh()
-                await bots_view.refresh()
 
             def bot_dialog():
                 accounts = store.connections()
@@ -232,7 +229,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 request_id = uuid.uuid4().hex
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-xl p-6 gap-4"):
                     ui.label("创建 Bot").classes("text-2xl font-bold")
-                    ui.label("跨账户价差对冲 · 模拟交易").classes("text-emerald-700")
+                    ui.label("跨账户价差对冲").classes("text-emerald-700")
                     name = ui.input("Bot 名称", value="BTC 对冲").classes("w-full").props("outlined")
                     choices = {a.id: f"{a.name} · {PROVIDER_NAMES[a.provider]}" for a in accounts}
                     long = (
@@ -257,11 +254,18 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             .props("outlined")
                         )
                         amount = (
-                            ui.number("单侧目标金额（模拟 USD）", value=1000, min=1)
+                            ui.number("单侧目标金额（USD）", value=1000, min=1)
                             .classes("flex-1")
                             .props("outlined")
                         )
-                    ui.label("两条腿可以在同一交易所的不同账户。手续费按账户设置模拟；资金费和积分尚未计入。")
+                    ui.label(
+                        "可选择同一交易所的两个不同账户。首次使用请设置较小金额；保存后点击启动开始等待价差。"
+                    )
+                    slippage = (
+                        ui.number("最大滑点 %", value=0.2, min=0, max=1, step=0.05)
+                        .classes("w-full")
+                        .props("outlined")
+                    )
                     preview_label = ui.label("预览后保存，启动才会等待条件。").classes(
                         "text-sm text-slate-500"
                     )
@@ -276,6 +280,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                                 symbol=symbol.value,
                                 threshold_pct=Decimal(str(threshold.value)),
                                 target_usd=Decimal(str(amount.value)),
+                                slippage_bps=Decimal(str(slippage.value)) * 100,
                             ),
                         )
 
@@ -284,7 +289,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             result = await runtime.preview(value())
                             preview_label.set_text(
                                 f"{result.source} · 当前价差 {result.spread_pct:.4f}% · "
-                                f"数量 {result.quantity} · 预计模拟费用 {money(result.estimated_fees)}"
+                                f"数量 {result.quantity} · 预计费用 {money(result.estimated_fees)}"
                             )
                         except Exception as exc:
                             preview_label.set_text(
@@ -312,87 +317,140 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
             def account_dialog():
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-lg p-6 gap-4"):
-                    ui.label("添加账户实例").classes("text-2xl font-bold")
-                    ui.label("当前创建模拟账户，无需提供 API key。可使用公开场馆行情。")
+                    ui.label("连接交易所账户").classes("text-2xl font-bold")
+                    ui.label("先在交易所的 API 页面生成交易用密钥，再填写以下信息。")
                     name = ui.input("账户昵称，例如 Arcus · 账户 A").classes("w-full").props("outlined")
                     provider = (
                         ui.select(
-                            {p.value: label for p, label in PROVIDER_NAMES.items()},
-                            label="行情场馆",
-                            value=Provider.DEMO_A.value,
+                            {p.value: label for p, label in PROVIDER_NAMES.items() if p in TRADING_PROVIDERS},
+                            label="交易所",
+                            value=Provider.ARCUS.value,
                         )
                         .classes("w-full")
                         .props("outlined")
                     )
-                    ref = ui.input("账户唯一标识（当前为模拟身份）").classes("w-full").props("outlined")
-                    funds = (
-                        ui.number("初始模拟资金（USD）", value=10000, min=1)
+                    wallet = ui.input("钱包地址").classes("w-full").props("outlined")
+                    index = (
+                        ui.number("子账户编号", value=0, min=0, precision=0)
                         .classes("w-full")
                         .props("outlined")
                     )
-                    fee = (
-                        ui.number("模拟手续费 bps（1 bps = 0.01%）", value=2, min=0, max=100)
+                    key_index = (
+                        ui.number("API key 编号", value=None, min=0, max=254, precision=0)
                         .classes("w-full")
                         .props("outlined")
                     )
+                    key_index.set_visibility(False)
+                    signing_key = (
+                        ui.input("API Signing Key", password=True, password_toggle_button=True)
+                        .classes("w-full")
+                        .props("outlined autocomplete=off")
+                    )
+                    help_label = ui.label(
+                        "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
+                    ).classes("text-sm text-slate-500")
+                    ui.link("Arcus API Keys", "https://app.arcus.xyz/api-keys", new_tab=True)
+                    ui.link("Lighter Robinhood", "https://robinhoodchain.lighter.xyz/apikeys", new_tab=True)
+
+                    def change_provider():
+                        is_arcus = provider.value == Provider.ARCUS.value
+                        wallet.set_visibility(is_arcus)
+                        key_index.set_visibility(not is_arcus)
+                        index.set_label("子账户编号" if is_arcus else "Account Index")
+                        index.set_value(0 if is_arcus else None)
+                        key_index.set_value(None)
+                        signing_key.set_value("")
+                        help_label.set_text(
+                            "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
+                            if is_arcus
+                            else "Lighter：填写该部署的 Account Index、API key 编号和 API 私钥。"
+                        )
+
+                    provider.on_value_change(change_provider)
 
                     async def save():
+                        button.disable()
                         try:
-                            store.add_connection(
-                                ConnectionCreate(
-                                    name=name.value,
-                                    provider=Provider(provider.value),
-                                    account_ref=ref.value,
-                                    paper_balance=Decimal(str(funds.value)),
-                                    paper_fee_bps=Decimal(str(fee.value)),
-                                )
+                            is_arcus = provider.value == Provider.ARCUS.value
+                            value = ConnectionCreate(
+                                name=name.value,
+                                provider=Provider(provider.value),
+                                account_index=index.value if index.value is not None else -1,
+                                address=wallet.value.strip() if is_arcus else None,
+                                api_key_index=key_index.value
+                                if not is_arcus and key_index.value is not None
+                                else None,
+                                api_private_key=SecretStr(signing_key.value.strip()),
                             )
+                            async with runtime.guard:
+                                await runtime.accounts.add(value)
+                            signing_key.set_value("")
                             dialog.close()
                             await accounts_view.refresh()
-                            ui.notify("账户实例已添加", color="positive")
-                        except ValueError as exc:
-                            ui.notify(str(exc), color="negative")
+                            ui.notify("账户已连接，余额与持仓已读取", color="positive")
+                        except Exception as exc:
+                            ui.notify(
+                                str(exc) if isinstance(exc, ValueError) else "账户连接失败，请核对账户和密钥",
+                                color="negative",
+                            )
+                        finally:
+                            button.enable()
 
-                    ui.button("保存账户实例", on_click=save).classes("w-full")
+                    button = ui.button("验证并连接账户", on_click=save).classes("w-full")
                 dialog.open()
 
             @ui.refreshable
             async def accounts_view():
                 with ui.row().classes("w-full justify-between"):
-                    ui.label("一个交易所，可以连接多个账户实例").classes("text-xl font-bold")
-                    ui.button("添加账户", icon="add", on_click=account_dialog)
-                ui.label("账户实例独立分配资金和持仓。当前所有实例均为模拟账户；不读取或使用真实密钥。")
+                    ui.label("交易所账户").classes("text-xl font-bold")
+                    ui.button("连接账户", icon="add", on_click=account_dialog)
+                ui.label("同一交易所可以连接多个账户，Bot 绑定到你选择的具体账户。")
                 for account in store.connections():
+                    view = runtime.accounts.view(account.id)
+                    snapshot = view["snapshot"]
                     with ui.card().classes("w-full p-5"):
                         with ui.row().classes("w-full justify-between"):
                             ui.label(account.name).classes("text-xl font-semibold")
-                            ui.badge("模拟账户", color="amber-8")
+                            ui.badge(
+                                {"connected": "已连接", "stale": "等待更新", "unavailable": "读取失败"}[
+                                    view["status"]
+                                ],
+                                color="positive" if view["status"] == "connected" else "grey-7",
+                            )
                         ui.label(PROVIDER_NAMES[account.provider])
-                        ui.label(
-                            f"账户身份：{account.account_ref} · 模拟可用资金 {money(store.account_available(account))}"
-                        )
-                        ui.label(f"模拟费率：{account.paper_fee_bps} bps；不代表官方费率").classes(
-                            "text-slate-500 text-sm"
-                        )
+                        ui.label(f"账户：{account.account_ref}")
+                        if view["error"]:
+                            ui.label(view["error"]).classes("text-amber-800")
+                        if snapshot is not None:
+                            ui.label(
+                                f"可用抵押资产 {money(snapshot['available'])} · 账户资产 {money(snapshot['equity'])}"
+                            )
+                            ui.label(f"上次读取：{stamp(snapshot['received_at'])}").classes(
+                                "text-xs text-slate-500"
+                            )
+                            for position in snapshot["positions"]:
+                                ui.label(
+                                    f"{position['symbol']} · 数量 {position['quantity']} · 入场价 {money(position['entry_price'])} · 交易所浮盈 {money(position['unrealized_pnl'])}"
+                                ).classes("text-sm")
+                        else:
+                            ui.label("余额与持仓待读取").classes("text-slate-500")
 
                         async def check(a=account):
                             try:
-                                symbols = await runtime.markets.catalog(a.provider)
-                                ui.notify(
-                                    f"公共目录读取成功：{len(symbols)} 个币种；{', '.join(symbols[:12])}",
-                                    color="positive",
-                                )
-                            except Exception:
-                                ui.notify("公共行情读取失败或接入未完成；未切换成虚构行情", color="negative")
+                                await runtime.accounts.refresh(a.id)
+                                await accounts_view.refresh()
+                                ui.notify("账户已更新", color="positive")
+                            except ValueError as exc:
+                                ui.notify(str(exc), color="negative")
 
-                        ui.button("检查公共行情", icon="wifi", on_click=check).props("outline")
+                        ui.button("刷新余额与持仓", icon="refresh", on_click=check).props("outline")
                 if not store.connections():
-                    ui.button("先创建虚构演示账户", on_click=demo_accounts)
+                    ui.label("尚未连接账户。连接后即可创建 Bot。")
 
             @ui.refreshable
             def points_view():
                 ui.label("平台积分").classes("text-xl font-bold")
-                ui.label("积分通常归属于账户。当前未接入官方积分读取，模拟交易不产生官方积分。")
+                ui.label("积分按交易所账户展示，官方积分读取尚未接入。")
                 for account in store.connections():
                     with ui.card().classes("w-full p-5"):
                         ui.label(account.name).classes("text-lg font-semibold")
@@ -427,7 +485,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
                     async def test_telegram():
                         try:
-                            await notifications.send("这是你主动请求的连接测试消息。当前为模拟交易版本。")
+                            await notifications.send("这是你主动请求的 Perp Farming Bots 通知测试消息。")
                             ui.notify("测试消息已发送", color="positive")
                         except ValueError as exc:
                             ui.notify(str(exc), color="negative")
@@ -446,7 +504,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             ui.label(strategy["name"]).classes("text-xl font-bold")
                             ui.label(strategy["description"])
                             if strategy["available"]:
-                                ui.button("创建模拟 Bot", on_click=bot_dialog)
+                                ui.button("创建 Bot", on_click=bot_dialog)
                             else:
                                 ui.badge("后续开放 · 当前未实现", color="grey")
                 with ui.tab_panel(accounts_tab).classes("p-0 gap-4"):
@@ -466,5 +524,5 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
             ui.timer(6, refresh)
             ui.label(
-                "程序停止后条件监测停止；关闭浏览器不会停止后台。当前只执行模拟交易，不保证积分资格。"
+                "关闭浏览器不影响 Bot；停止程序会停止条件监测。官方积分读取和资金费归属尚未接入。"
             ).classes("text-xs text-slate-500")
