@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.secrets/
+data/
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+.venv/
+node_modules/
+dist/
+.DS_Store
