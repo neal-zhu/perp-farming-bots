@@ -34,7 +34,7 @@ def test_native_account_api_has_no_virtual_funds_or_exposed_keys(tmp_path):
         listing = client.get("/api/connections").json()
         assert listing[0]["snapshot"]["available"] == "10000"
         assert listing[0]["account_ref"].endswith(":0")
-        assert client.get("/api/points").json()[0]["value"] is None
+        assert client.get("/api/points").json()[0]["metrics"][0]["value"] is None
         assert client.post("/api/connections", json={**value, "paper_balance": "10000"}).status_code == 422
         assert client.post("/api/connections", json={**value, "provider": "demo_a"}).status_code == 422
         invalid = client.post("/api/connections", json={**value, "account_index": 10})

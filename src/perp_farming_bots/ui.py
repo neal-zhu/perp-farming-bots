@@ -22,6 +22,7 @@ from .models import (
     Provider,
 )
 from .notifications import Notifications
+from .points_widgets import PointsFeed
 from .runtime import Runtime
 from .store import Store, fills, operations
 
@@ -628,15 +629,6 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 if not store.connections():
                     ui.label("尚未连接账户。连接后即可创建 Bot。")
 
-            @ui.refreshable
-            def points_view():
-                ui.label("平台积分").classes("text-xl font-bold")
-                ui.label("积分按交易所账户展示，官方积分读取尚未接入。")
-                for account in store.connections():
-                    with ui.card().classes("w-full p-5"):
-                        ui.label(account.name).classes("text-lg font-semibold")
-                        ui.label("积分：暂不可读取").classes("text-slate-500")
-
             alert_feed: AlertFeed | None = None
 
             def alerts_view():
@@ -696,7 +688,27 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 with ui.tab_panel(accounts_tab).classes("p-0 gap-4"):
                     await accounts_view()
                 with ui.tab_panel(points_tab).classes("p-0 gap-4"):
-                    points_view()
+
+                    async def refresh_points():
+                        points_button.disable()
+                        try:
+                            await runtime.points.refresh_all()
+                            points_feed.update()
+                        finally:
+                            points_button.enable()
+
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("平台积分").classes("text-xl font-bold")
+                        points_button = ui.button("刷新积分", icon="refresh", on_click=refresh_points).props(
+                            "outline"
+                        )
+                    ui.label(
+                        "直接读取官方数据，每 2 分钟自动更新。积分属于账户或钱包，不分摊到单个 Bot。"
+                    ).classes("text-slate-600")
+                    ui.label(
+                        "实时总积分与累计、上周统计来自不同接口，可能不同步；分别展示，不相加。"
+                    ).classes("text-sm text-slate-500")
+                    points_feed = PointsFeed(runtime.points)
                 with ui.tab_panel(alerts_tab).classes("p-0 gap-4"):
                     alerts_view()
 
@@ -705,8 +717,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     await bots_view()
                 elif tabs.value == alerts_tab and alert_feed is not None:
                     alert_feed.update()
+                points_feed.update()
 
             ui.timer(6, refresh)
             ui.label(
-                "关闭浏览器不影响 Bot；停止程序会停止条件监测。官方积分读取和资金费归属尚未接入。"
+                "关闭浏览器不影响 Bot；停止程序会停止条件监测。实际资金费归属尚未计入 Bot 盈亏。"
             ).classes("text-xs text-slate-500")

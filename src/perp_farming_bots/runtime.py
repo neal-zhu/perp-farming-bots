@@ -24,6 +24,7 @@ from .models import (
     Preview,
     Provider,
 )
+from .points import Points
 from .store import Store, fills, operations, orders
 from .trading import Accounts
 
@@ -65,6 +66,7 @@ class Runtime:
 
     def __init__(self, store: Store, markets: Markets, accounts: Accounts):
         self.store, self.markets, self.accounts = store, markets, accounts
+        self.points = Points(store, markets, accounts)
         self.guard = asyncio.Lock()
         self.task: asyncio.Task[None] | None = None
         self.last_tick: float | None = None
@@ -77,8 +79,10 @@ class Runtime:
                 self.store.set_state(op["bot_id"], BotState.ATTENTION, "上次操作中断，正在查询原订单")
                 self.store.finish_operation(op["id"], "unknown", "原订单待核实；不会重复提交")
         self.task = asyncio.create_task(self.run())
+        await self.points.start()
 
     async def stop(self) -> None:
+        await self.points.stop()
         if self.task is not None:
             self.task.cancel()
             try:

@@ -166,16 +166,11 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
 
     @app.get("/api/points")
     def points():
-        return [
-            {
-                "connection_id": c.id,
-                "name": c.name,
-                "value": None,
-                "status": "unavailable",
-                "reason": "尚未接入官方积分读取",
-            }
-            for c in store.connections()
-        ]
+        return runtime.points.listing()
+
+    @app.post("/api/points/refresh")
+    async def refresh_points():
+        return await runtime.points.refresh_all()
 
     @app.get("/api/notifications")
     def notification_status():
