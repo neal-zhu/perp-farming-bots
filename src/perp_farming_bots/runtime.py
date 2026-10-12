@@ -226,32 +226,38 @@ class Runtime:
             return
         async with self.guard:
             bot = self.store.bot(bot_id)
-            if action == "start":
-                if bot.state not in {BotState.READY, BotState.STOPPED}:
-                    raise ValueError("当前状态无法启动")
-                if self.store.positions(bot_id) or self.store.bot_orders(bot_id):
-                    raise ValueError("此 Bot 已执行过交易，请处理持仓后新建 Bot")
+            if action == "run":
+                if bot.state not in {BotState.READY, BotState.PAUSED}:
+                    raise ValueError("当前状态无法运行，请先核实订单和持仓")
+                if self.store.bot_pending(bot_id):
+                    raise ValueError("有未确认订单或操作，请先同步")
+                owned = self.store.positions(bot_id)
                 self._direction_conflict(bot)
-                await self.preview(bot)
-                for connection_id in [bot.parameters.long_connection_id, bot.parameters.short_connection_id]:
-                    await self._check_inventory(connection_id, bot.parameters.symbol)
-                self.store.set_state(bot_id, BotState.WAITING, "等待价差达到条件后建仓")
+                if owned:
+                    if bot.state != BotState.PAUSED:
+                        raise ValueError("待运行状态不应已有持仓，请同步并核实")
+                    if len(owned) != 2 or owned[0].quantity != owned[1].quantity:
+                        raise ValueError("持仓尚未形成匹配的双腿，请先处理；运行不会补腿")
+                    for position in owned:
+                        await self._check_inventory(position.connection_id, position.symbol)
+                    self.store.set_state(bot_id, BotState.HOLDING, "策略运行中；保留已确认持仓")
+                else:
+                    if self.store.bot_orders(bot_id):
+                        raise ValueError("此 Bot 已执行过交易且无持仓，请新建 Bot")
+                    await self.preview(bot)
+                    for connection_id in [
+                        bot.parameters.long_connection_id,
+                        bot.parameters.short_connection_id,
+                    ]:
+                        await self._check_inventory(connection_id, bot.parameters.symbol)
+                    self.store.set_state(bot_id, BotState.WAITING, "等待价差达到条件后建仓")
             elif action == "pause":
-                if bot.state not in {BotState.WAITING, BotState.HOLDING}:
-                    raise ValueError("当前状态无法暂停")
-                self.store.set_state(bot_id, BotState.PAUSED, "停止新策略动作，保留持仓")
-            elif action == "resume":
-                if bot.state != BotState.PAUSED:
-                    raise ValueError("只有已暂停的 Bot 可以恢复")
-                state = BotState.HOLDING if self.store.positions(bot_id) else BotState.WAITING
-                self._direction_conflict(bot)
-                self.store.set_state(bot_id, state, "策略已恢复")
-            elif action == "stop":
-                if bot.state == BotState.CLOSED:
-                    raise ValueError("已平仓的 Bot 无需停止")
-                if self._unresolved(bot_id):
-                    raise ValueError("有未确认订单，请先同步；此时策略已经停止新动作")
-                self.store.set_state(bot_id, BotState.STOPPED, "策略已停止；保留持仓")
+                idle_attention = bot.state == BotState.ATTENTION and not self.store.positions(bot_id)
+                if bot.state not in {BotState.WAITING, BotState.HOLDING} and not idle_attention:
+                    raise ValueError("当前状态无需暂停")
+                if self.store.bot_pending(bot_id):
+                    raise ValueError("有未确认订单或操作，请先同步；策略已停止新动作")
+                self.store.set_state(bot_id, BotState.PAUSED, "策略已暂停；持仓保留，点击运行可继续")
             elif action == "close":
                 await self._close(bot)
             else:
@@ -407,9 +413,7 @@ class Runtime:
             raise ValueError("有未确认订单，请先同步订单")
         allocated = self.store.positions(bot.id)
         if not allocated:
-            if bot.state != BotState.CLOSED:
-                self.store.set_state(bot.id, BotState.STOPPED, "没有分配持仓，已停止")
-            return
+            raise ValueError("此 Bot 没有已分配持仓，无需平仓")
         for p in allocated:
             await self._check_inventory(p.connection_id, p.symbol)
         references = {}

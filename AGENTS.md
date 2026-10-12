@@ -16,7 +16,7 @@
 - The product is Perp Farming Bots: a self-hosted application with built-in perpetual trading strategies. Hedging is the first strategy, not the product identity or the shared runtime's data model.
 - Model bot instances, strategy-owned state, allocated inventory, orders and execution operations explicitly. Shared execution must support one or multiple legs without making every action a paired hedge.
 - Future grid and scalping rules require explicit product specifications; do not invent or enable them because their names appear in documentation.
-- Pause, stop, cancel outstanding orders and close allocated inventory are distinct user actions. No account-wide close-all to stop one bot.
+- User-facing trading actions are run, pause and close. Run also resumes a paused bot; pause preserves inventory; close handles only allocated inventory. Do not reintroduce a separate bot stop action. No account-wide close-all to close one bot.
 - Bind bots to connection/account instance IDs, not exchange names. Multiple accounts on one venue may form a pair; an API-key change is not a new native account.
 
 ## Delivery priority

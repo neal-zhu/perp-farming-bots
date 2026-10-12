@@ -22,7 +22,7 @@ def edit(bot, **changes):
 async def test_edit_waiting_bot_requires_explicit_restart_and_sends_no_orders(env):
     store, runtime, a, b = env
     bot = make_bot(store, a, b)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     updated = store.update_bot(bot.id, edit(bot, symbol="ETH", target_usd="250", threshold_pct="0.2"))
     assert updated.state == BotState.READY
     assert updated.parameters.symbol == "ETH"
@@ -35,7 +35,7 @@ async def test_edit_waiting_bot_requires_explicit_restart_and_sends_no_orders(en
 async def test_rename_waiting_bot_preserves_waiting_state(env):
     store, runtime, a, b = env
     bot = make_bot(store, a, b)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert store.update_bot(bot.id, edit(bot)).state == BotState.WAITING
 
 
@@ -66,11 +66,11 @@ async def test_holding_bot_can_change_close_slippage_and_delete_only_after_close
     assert all(i.symbol == "BTC" for i in runtime.accounts.adapter(a.id).sent)
 
 
-async def test_pending_operation_blocks_delete_and_parameter_edits_even_if_state_stopped(env):
+async def test_pending_operation_blocks_delete_and_parameter_edits_even_if_state_paused(env):
     store, _, a, b = env
     bot = make_bot(store, a, b)
     store.operation(bot.id, "open")
-    store.set_state(bot.id, BotState.STOPPED, "interrupted")
+    store.set_state(bot.id, BotState.PAUSED, "interrupted")
     assert not any(store.bot_editability(bot.id).values())
     with pytest.raises(ValueError, match="未确认"):
         store.delete_bot(bot.id)
@@ -167,15 +167,15 @@ async def test_periodic_updates_preserve_bot_card_nodes_and_unsaved_form(bot_pag
 async def test_periodic_updates_change_status_values_in_place(bot_page, configured_bot, env):
     store, _, _, _ = env
     old_ids = set(bot_page.elements)
-    badge = next(e for e in bot_page.elements.values() if isinstance(e, ui.badge) and e.text == "待启动")
+    badge = next(e for e in bot_page.elements.values() if isinstance(e, ui.badge) and e.text == "待运行")
     store.set_state(configured_bot.id, BotState.WAITING, "正在等条件")
     with bot_page:
         await bot_page.test_refresh()
     assert set(bot_page.elements) == old_ids
     assert badge.text == "等待价差"
-    start = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "启动")
+    start = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "运行")
     pause = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "暂停")
-    assert not start.visible and pause.visible
+    assert start.visible and not start.enabled and pause.visible and pause.enabled
 
 
 async def test_alert_polling_keeps_telegram_draft_and_existing_alert_nodes(bot_page, env):

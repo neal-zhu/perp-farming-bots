@@ -148,11 +148,33 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 2}:
+            if version not in {0, 2, 3}:
                 raise ValueError(f"Unsupported database schema version {version}")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            db.exec_driver_sql("PRAGMA user_version=2")
+            if version == 2:
+                # Explicit lifecycle migration; never decode old stop states
+                # through an alias, and never start a strategy during migration.
+                stopped = list(db.execute(select(bots.c.id).where(bots.c.state == "stopped")).scalars())
+                for bot_id in stopped:
+                    owned = self.positions(bot_id)
+                    attention = (
+                        self.bot_pending(bot_id)
+                        or bool(owned)
+                        and (len(owned) != 2 or owned[0].quantity != owned[1].quantity)
+                    )
+                    db.execute(
+                        update(bots)
+                        .where(bots.c.id == bot_id)
+                        .values(
+                            state=BotState.ATTENTION.value if attention else BotState.PAUSED.value,
+                            reason="旧版已停止状态迁移：需要核实订单或持仓"
+                            if attention
+                            else "旧版已停止状态已迁移为暂停；持仓保留",
+                            updated_at=time.time(),
+                        )
+                    )
+            db.exec_driver_sql("PRAGMA user_version=3")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -228,7 +250,7 @@ class Store:
             **value.model_dump(),
             id=uuid.uuid4().hex,
             state=BotState.READY,
-            reason="尚未启动",
+            reason="尚未运行",
             created_at=now,
             updated_at=now,
         )
@@ -283,8 +305,8 @@ class Store:
 
     def delete_bot(self, bot_id: str) -> None:
         bot = self.bot(bot_id)
-        if bot.state not in {BotState.READY, BotState.STOPPED, BotState.CLOSED} or self.positions(bot_id):
-            raise ValueError("只能删除没有持仓、且尚未启动或已停止的 Bot")
+        if bot.state not in {BotState.READY, BotState.PAUSED, BotState.CLOSED} or self.positions(bot_id):
+            raise ValueError("只能删除没有持仓、且待运行/已暂停/已平仓的 Bot")
         if self.bot_pending(bot_id):
             raise ValueError("有未确认订单或操作，不能删除；请先同步并处理")
         with self.transaction() as db:
@@ -303,11 +325,11 @@ class Store:
             "entry_parameters": not pending
             and not self.positions(bot_id)
             and not self.bot_orders(bot_id)
-            and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED, BotState.STOPPED},
+            and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED},
             "slippage": not pending and bot.state != BotState.ATTENTION,
             "delete": not pending
             and not self.positions(bot_id)
-            and bot.state in {BotState.READY, BotState.STOPPED, BotState.CLOSED},
+            and bot.state in {BotState.READY, BotState.PAUSED, BotState.CLOSED},
         }
 
     def update_bot(self, bot_id: str, value: BotUpdate) -> Bot:
@@ -330,7 +352,7 @@ class Store:
         }
         if value.parameters != bot.parameters and bot.state in {BotState.WAITING, BotState.PAUSED}:
             if editable["entry_parameters"]:
-                values.update(state=BotState.READY.value, reason="参数已修改，请重新启动")
+                values.update(state=BotState.READY.value, reason="参数已修改，请重新点击运行")
         with self.transaction() as db:
             db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
         return self.bot(bot_id)

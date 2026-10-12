@@ -32,17 +32,15 @@ class BotState(StrEnum):
     WAITING = "waiting"
     HOLDING = "holding"
     PAUSED = "paused"
-    STOPPED = "stopped"
     CLOSED = "closed"
     ATTENTION = "attention"
 
 
 STATE_NAMES = {
-    BotState.READY: "待启动",
+    BotState.READY: "待运行",
     BotState.WAITING: "等待价差",
     BotState.HOLDING: "持仓中",
     BotState.PAUSED: "已暂停",
-    BotState.STOPPED: "已停止（可能仍持仓）",
     BotState.CLOSED: "已平仓",
     BotState.ATTENTION: "需要处理",
 }

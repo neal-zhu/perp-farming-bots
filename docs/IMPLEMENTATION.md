@@ -10,7 +10,7 @@ A spread bot has its own identity, two account bindings, symbol, threshold, targ
 
 The execution path reads both real books and their precisions, checks native inventory against owned allocations, journals the signed first-leg request, sends once, then queries the original order. The second leg uses the actual filled quantity that its market precision permits. An unmatched remainder stays visible with an alert. The runtime adds no unrequested compensation or automatic risk trades.
 
-Closing is a separate user action. It checks original order uncertainty and actual native inventory, submits reduce-only for the selected bot's quantity and records actual confirmed fills. Partial close retains the remainder. Pause and stop preserve inventory.
+Closing is a separate user action. It checks original order uncertainty and actual native inventory, submits reduce-only for the selected bot's quantity and records actual confirmed fills. Partial close retains the remainder. Pause preserves inventory; run resumes the paused strategy without repeating entry. The three primary actions are run, pause and close; separate stop/start/resume commands are removed. Schema 3 explicitly migrates legacy stopped states without trading.
 
 Restart and synchronization query original identities without reissuing requests or automatically submitting a missed second leg. Recent-history lookup can remain unknown when evidence has aged out; this is explicit, not assumed rejection or zero fill.
 

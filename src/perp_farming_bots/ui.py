@@ -292,7 +292,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             entry_control.disable()
                     else:
                         ui.label(
-                            "可选择同一交易所的两个不同账户。保存参数不会下单；等待中的 Bot 修改参数后需重新启动。"
+                            "可选择同一交易所的两个不同账户。保存参数不会下单；等待中的 Bot 修改参数后需重新点击运行。"
                         ).classes("text-sm")
                     slippage = (
                         ui.number(
@@ -311,7 +311,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         slippage.disable()
                     form_error = ui.label("").classes("text-sm text-red-600")
                     busy = False
-                    preview_label = ui.label("预览后保存，启动才会等待条件。").classes(
+                    preview_label = ui.label("预览后保存，点击运行才会等待条件。").classes(
                         "text-sm text-slate-500"
                     )
 
@@ -372,7 +372,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             dialog.delete()
                             await bots_view()
                             tabs.set_value(bots_tab)
-                            notify("Bot 已保存" if bot_id else "Bot 已创建，可点击启动", color="positive")
+                            notify("Bot 已保存" if bot_id else "Bot 已创建，可点击运行", color="positive")
                         except ValidationError:
                             form_error.set_text("参数格式不正确，请检查各字段。")
                         except ValueError as exc:

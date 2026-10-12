@@ -76,25 +76,26 @@ class BotCard:
             with ui.row().classes("gap-2"):
                 self.buttons: dict[str, ui.button] = {}
                 for command, title, icon in [
-                    ("start", "启动", "play_arrow"),
-                    ("resume", "恢复", "play_arrow"),
+                    ("run", "运行", "play_arrow"),
                     ("pause", "暂停", "pause"),
-                    ("stop", "停止", "stop"),
-                    ("sync", "同步订单", "sync"),
                 ]:
                     self.buttons[command] = ui.button(
                         title, icon=icon, on_click=lambda cmd=command: action(bot_id, cmd)
                     )
-                    if command != "start":
+                    if command != "run":
                         self.buttons[command].props("outline")
-                self.close = ui.button("停止并平仓", on_click=lambda: close(bot_id), color="orange").props(
+                self.close = ui.button("平仓", on_click=lambda: close(bot_id), color="orange").props(
                     "outline"
                 )
+            with ui.row().classes("gap-2"):
+                self.buttons["sync"] = ui.button(
+                    "同步订单", icon="sync", on_click=lambda: action(bot_id, "sync")
+                ).props("flat")
                 ui.button("修改参数", icon="edit", on_click=lambda: edit(bot_id)).props("outline")
                 self.remove = ui.button(
                     "删除", icon="delete_outline", on_click=lambda: remove(bot_id), color="negative"
                 ).props("flat")
-                self.remove.tooltip("无持仓、无未确认订单，且待启动/已停止/已平仓时可删除")
+                self.remove.tooltip("无持仓、无未确认订单，且待运行/已暂停/已平仓时可删除")
                 ui.button("成交明细", icon="receipt_long", on_click=lambda: details(bot_id)).props("flat")
 
     def update(self, bot: Bot, store: Store, pnl: dict[str, Any], funding: dict[str, Any]):
@@ -146,18 +147,28 @@ class BotCard:
         self.reason.set_text(bot.reason)
         self.pnl_error.set_visibility(bool(pnl["unavailable_reason"]))
         self.pnl_error.set_text(pnl["unavailable_reason"] or "")
-        visible = {
-            "start": bot.state in {BotState.READY, BotState.STOPPED}
+        pending = store.bot_pending(bot.id)
+        can_run = (
+            bot.state in {BotState.READY, BotState.PAUSED}
+            and not pending
+            and (
+                (not positions and not store.bot_orders(bot.id))
+                or (
+                    bot.state == BotState.PAUSED
+                    and len(positions) == 2
+                    and positions[0].quantity == positions[1].quantity
+                )
+            )
+        )
+        can_pause = not pending and (
+            bot.state in {BotState.WAITING, BotState.HOLDING}
+            or bot.state == BotState.ATTENTION
             and not positions
-            and not store.bot_orders(bot.id),
-            "resume": bot.state == BotState.PAUSED,
-            "pause": bot.state in {BotState.WAITING, BotState.HOLDING},
-            "stop": bot.state not in {BotState.STOPPED, BotState.CLOSED},
-            "sync": bot.state == BotState.ATTENTION,
-        }
-        for key, button in self.buttons.items():
-            button.set_visibility(visible[key])
-        self.close.set_visibility(bool(positions))
+        )
+        self.buttons["run"].set_enabled(can_run)
+        self.buttons["pause"].set_enabled(can_pause)
+        self.buttons["sync"].set_visibility(bot.state == BotState.ATTENTION)
+        self.close.set_enabled(bool(positions) and not pending)
         self.remove.set_enabled(editable["delete"])
 
 

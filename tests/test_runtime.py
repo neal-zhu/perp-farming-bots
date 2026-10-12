@@ -28,7 +28,7 @@ def make_bot(store, a, b, *, name="bot", request="request-0001", amount="1000"):
 
 async def open_bot(store, runtime, a, b, **kwargs):
     bot = make_bot(store, a, b, **kwargs)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert await runtime.try_open(bot.id)
     return store.bot(bot.id)
 
@@ -61,7 +61,7 @@ async def test_peer_partial_fill_retains_actual_exposure_without_risk_trade(env)
     store, runtime, a, b = env
     runtime.accounts.adapter(b.id).fraction = Decimal("0.5")
     bot = make_bot(store, a, b, amount="120.002")
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert not await runtime.try_open(bot.id)
     assert store.bot(bot.id).state == BotState.ATTENTION
     assert len(runtime.accounts.adapter(a.id).sent) == len(runtime.accounts.adapter(b.id).sent) == 1
@@ -72,14 +72,14 @@ async def test_unknown_first_order_does_not_send_peer_or_retry(env):
     store, runtime, a, b = env
     runtime.accounts.adapter(a.id).unknown = True
     bot = make_bot(store, a, b)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert not await runtime.try_open(bot.id)
     assert len(runtime.accounts.adapter(a.id).sent) == 1
     assert runtime.accounts.adapter(b.id).sent == []
     assert (await runtime.pnl(bot.id))["net"] is None
     assert not await runtime.try_open(bot.id)
     with pytest.raises(ValueError):
-        await runtime.command(bot.id, "start")
+        await runtime.command(bot.id, "run")
     runtime.accounts.adapter(a.id).unknown = False
     await runtime.sync(bot.id)
     await runtime.sync(bot.id)
@@ -107,7 +107,7 @@ async def test_transient_order_lookup_error_does_not_abandon_confirmed_first_leg
 
     monkeypatch.setattr(adapter, "lookup", lookup)
     bot = make_bot(store, a, b)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert await runtime.try_open(bot.id), "temporary first-leg lookup error must not create a single-leg bot"
     assert len(store.positions(bot.id)) == 2
     assert len(adapter.sent) == len(runtime.accounts.adapter(b.id).sent) == 1
@@ -145,7 +145,7 @@ async def test_invalid_native_identity_stays_unknown_and_preserves_diagnostic_af
 
     monkeypatch.setattr(adapter, "lookup", lookup)
     bot = make_bot(store, a, b)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert not await runtime.try_open(bot.id)
     assert count == 1 and len(adapter.sent) == 1
     assert runtime.accounts.adapter(b.id).sent == []
@@ -214,17 +214,17 @@ async def test_partial_close_retains_remaining_allocation_and_retry_closes_only_
     assert runtime.accounts.adapter(a.id).sent[-1].reduce_only is True
 
 
-async def test_pause_stop_preserve_positions_and_direction_conflict(env):
+async def test_run_pause_preserve_positions_and_direction_conflict(env):
     store, runtime, a, b = env
     bot = await open_bot(store, runtime, a, b)
     owned = store.positions(bot.id)
     await runtime.command(bot.id, "pause")
-    await runtime.command(bot.id, "resume")
-    await runtime.command(bot.id, "stop")
+    await runtime.command(bot.id, "run")
+    await runtime.command(bot.id, "pause")
     assert store.positions(bot.id) == owned
     opposing = make_bot(store, b, a, request="other-request")
     with pytest.raises(ValueError, match="相反方向"):
-        await runtime.command(opposing.id, "start")
+        await runtime.command(opposing.id, "run")
 
 
 async def test_external_inventory_and_orders_block_submission(env):
@@ -232,11 +232,11 @@ async def test_external_inventory_and_orders_block_submission(env):
     bot = make_bot(store, a, b)
     runtime.accounts.adapter(a.id).net = Decimal("0.1")
     with pytest.raises(ValueError, match="实际持仓"):
-        await runtime.command(bot.id, "start")
+        await runtime.command(bot.id, "run")
     runtime.accounts.adapter(a.id).net = Decimal(0)
     runtime.accounts.adapter(a.id).external_orders = [{"id": "external"}]
     with pytest.raises(ValueError, match="其他未成交委托"):
-        await runtime.command(bot.id, "start")
+        await runtime.command(bot.id, "run")
     assert runtime.accounts.adapter(a.id).sent == []
 
 
@@ -301,5 +301,5 @@ async def test_signed_request_is_durable_before_send_and_private_payload_is_not_
         return await original(prepared)
 
     monkeypatch.setattr(adapter, "send", check_journal)
-    await runtime.command(bot.id, "start")
+    await runtime.command(bot.id, "run")
     assert await runtime.try_open(bot.id)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -23,7 +24,7 @@ from .store import Store, alerts, fills, operations
 
 class Command(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: str
+    action: Literal["run", "pause", "close", "sync"]
 
 
 def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications: Notifications) -> None:
