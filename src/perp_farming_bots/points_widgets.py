@@ -24,10 +24,6 @@ class PointsCard:
                         status = ui.label().classes("text-sm text-slate-600")
                         source = ui.label().classes("text-xs text-slate-500 break-all")
                         self.metrics[metric.key] = value, status, source
-            if any(m.scope == "unknown" for m in snapshot.metrics):
-                ui.label(
-                    "累计和上周积分按账户编号查询；官方未说明子账户是否合并，请以官网口径为准。"
-                ).classes("text-xs text-slate-500")
         self.update(snapshot)
 
     def update(self, snapshot: ConnectionPoints) -> None:

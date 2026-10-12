@@ -19,7 +19,7 @@ Updated 2026-10-12 (Asia/Shanghai). The application now uses native exchange acc
 - Bounded original-order confirmation polling after transient network/HTTP errors or incomplete reads; no order resubmission. Permanent identity errors remain unknown and stop the peer leg. Operation diagnostics survive background synchronization.
 - Lighter zero trading fees are confirmed from authenticated, exact-order trade rows and native zero-field omission rules. Missing fees can be enriched later without reapplying fills or changing inventory. Optional fee reads do not block confirmed-fill recognition.
 - Persistent Bot cards and alert rows: periodic updates change text and visibility in place, preserving form drafts and Telegram settings. Unmatched allocated legs are highlighted.
-- Official points reads: RH account live total, plus Core/RH cumulative and last-week statistics. Separate two-minute read task, manual refresh, per-metric unknown/error/stale states and persistent cards. Distinct sources are not added or attributed to bots. Arcus points are explicitly deferred by product decision; no session-token configuration or points requests remain.
+- Official points reads: only the RH account's own live total. Cumulative/weekly/referral statistics have been removed; Core own-live-points access is explicitly unsupported until verified. Separate two-minute read task, manual refresh, per-metric unknown/error/stale states and persistent cards. Distinct sources are not added or attributed to bots. Arcus points are explicitly deferred by product decision; no session-token configuration or points requests remain.
 - Actual account snapshots, stale/unavailable states, price PnL, explicit missing fees/funding/points, alerts and optional Telegram.
 - Native database schema 3 in app.live.db. Prior records in app.db are preserved and are not treated as native evidence.
 - Local password-free access, with security/login design deferred by product decision.
@@ -27,11 +27,11 @@ Updated 2026-10-12 (Asia/Shanghai). The application now uses native exchange acc
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- Eighty-six automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- Eighty-eight automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
-- Read-only authenticated RH points queries succeeded on the user's existing account. Arcus's separate official account-points service returned 401 without its official login identity token. Points fixtures verify native hosts/account indices/auth headers, exact zero, malformed/missing values, partial failure, rate limiting, stale data and persistent UI drafts. No real orders are sent for points verification.
+- Read-only authenticated RH points queries succeeded on the user's existing account. Arcus's separate official account-points service returned 401 without its official login identity token. Points fixtures verify native hosts/account indices/auth headers, exact zero, malformed/missing values, account isolation, rate limiting, stale data and persistent UI drafts. No real orders are sent for points verification.
 - The local points page and manual refresh were verified with actual RH counts; Arcus displays deferred status. Service update preserved the current bot state, parameters, positions and all order/operation journals. Temporary Arcus points authorization was removed from local settings and no Arcus points request path remains.
 - Arcus typed signing payload is verified with the actual Ed25519 public key; timestamps, expiry, price ticks, quantity quantums and case-sensitive client identity are checked.
 - Lighter tests verify explicit Core/RH chain IDs, nonce, IOC expiry, reduce-only and native-order identities. The application uses the pinned official signer SDK.
@@ -45,7 +45,7 @@ A user-controlled entry revealed a first-leg confirmation failure, followed by l
 
 - Actual private-account and funded-order acceptance for each supported profile.
 - Complete long-range paginated order/fill history and WebSocket reconciliation.
-- Arcus points (deferred by product decision); Core private-account points acceptance; points history and bot-specific funding attribution; Lighter nonzero fee monetary accounting.
+- Arcus points (deferred by product decision); Core own-live-points endpoint verification; points history and bot-specific funding attribution; Lighter nonzero fee monetary accounting.
 - Hyperliquid/Binance native accounts and orders; additional venues.
 - Grid/scalping specification and implementation.
 - Security/login design and release packaging validation on additional platforms.

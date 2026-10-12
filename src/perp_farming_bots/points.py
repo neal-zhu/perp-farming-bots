@@ -21,7 +21,7 @@ RH_POINTS_URL = "https://robinhoodchain.lighter.xyz/leaderboard"
 
 
 class PointMetric(StrictModel):
-    key: Literal["live_total", "reported_total", "last_week"]
+    key: Literal["live_total"]
     label: str
     scope: Literal["account", "wallet", "unknown"]
     status: Literal["available", "unavailable", "unsupported"]
@@ -58,21 +58,12 @@ def scope_id(connection: Connection) -> str:
 
 
 def definitions(provider: Provider) -> list[tuple[str, str, str, str]]:
-    if provider in {Provider.LIGHTER, Provider.LIGHTER_RH}:
-        allocated = [
-            ("reported_total", "官方累计积分", "unknown", HOSTS[provider] + "/api/v1/referral/points"),
-            ("last_week", "官方上周积分", "unknown", HOSTS[provider] + "/api/v1/referral/points"),
-        ]
-        if provider == Provider.LIGHTER_RH:
-            return [
-                ("live_total", "实时总积分", "account", HOSTS[provider] + "/api/v1/livePoints/total"),
-                *allocated,
-            ]
-        return allocated
+    if provider == Provider.LIGHTER_RH:
+        return [("live_total", "我的积分", "account", HOSTS[provider] + "/api/v1/livePoints/total")]
     return [
         (
-            "reported_total",
-            "积分",
+            "live_total",
+            "我的积分",
             "wallet" if provider == Provider.ARCUS else "unknown",
             "Arcus 官网（暂未接入）" if provider == Provider.ARCUS else "尚未接入",
         )
@@ -139,13 +130,13 @@ class Points:
 
     def view(self, connection_id: str) -> ConnectionPoints:
         connection = self.store.connection(connection_id)
-        if connection.provider not in {Provider.LIGHTER, Provider.LIGHTER_RH}:
+        if connection.provider != Provider.LIGHTER_RH:
             return self.base(
                 connection,
                 "unsupported",
                 "Arcus 积分暂未接入，请到官网查看。"
                 if connection.provider == Provider.ARCUS
-                else "该平台的官方积分尚未接入",
+                else "该平台的账户实时积分暂未接入，请到官网查看。",
             )
         snapshot = self.snapshots.get(scope_id(connection))
         if snapshot is None:
@@ -210,6 +201,8 @@ class Points:
         return self.listing()
 
     async def request(self, provider: Provider, path: str, account_index: int, token: str) -> dict[str, Any]:
+        if provider != Provider.LIGHTER_RH or path != "/api/v1/livePoints/total":
+            raise ValueError("该平台的账户实时积分尚未接入")
         response = await self.markets.http.get(
             HOSTS[provider] + path,
             params={"account_index": account_index},
@@ -217,14 +210,10 @@ class Points:
         )
         if response.status_code != 200:
             raise VenueRequestError("官方积分读取失败", response.status_code)
-        # referral/points has no code field in its documented successful schema;
-        # livePoints/total requires code=200. Do not change the trading API parser.
         payload = json.loads(response.text, parse_float=Decimal)
         if not isinstance(payload, dict):
             raise ValueError("官方积分响应不是对象")
-        if ("code" in payload and payload["code"] != 200) or (
-            path == "/api/v1/livePoints/total" and payload.get("code") != 200
-        ):
+        if payload.get("code") != 200:
             raise ValueError("官方积分返回非成功状态")
         return payload
 
@@ -232,7 +221,7 @@ class Points:
         key = scope_id(self.store.connection(connection_id))
         async with self.locks.setdefault(key, asyncio.Lock()):
             connection = self.store.connection(connection_id)
-            if connection.provider not in {Provider.LIGHTER, Provider.LIGHTER_RH}:
+            if connection.provider != Provider.LIGHTER_RH:
                 return self.view(connection_id)
             # Coalesce refresh clicks and background polling without replaying reads.
             if time.time() - self.checked.get(key, 0) < 10:
@@ -243,38 +232,16 @@ class Points:
                 if not isinstance(adapter, Lighter):
                     raise ValueError("原生账户适配器不匹配")
                 token = await adapter.auth()
-                paths = tuple(
-                    dict.fromkeys(m.source.removeprefix(HOSTS[connection.provider]) for m in snapshot.metrics)
+                result = await self.request(
+                    connection.provider, "/api/v1/livePoints/total", connection.account_index, token
                 )
-                results = dict(
-                    zip(
-                        paths,
-                        await asyncio.gather(
-                            *(
-                                self.request(connection.provider, path, connection.account_index, token)
-                                for path in paths
-                            ),
-                            return_exceptions=True,
-                        ),
-                        strict=True,
-                    )
-                )
-                for index, metric in enumerate(snapshot.metrics):
-                    result = results[metric.source.removeprefix(HOSTS[connection.provider])]
-                    if isinstance(result, BaseException):
-                        metric.reason = self.failure(result)
-                        continue
-                    field = {
-                        "live_total": "total_live_points",
-                        "reported_total": "user_total_points",
-                        "last_week": "user_last_week_points",
-                    }[metric.key]
-                    try:
-                        value = number(result, field)
-                    except Exception:
-                        metric.reason = "官方积分数据缺失或格式异常，请稍后刷新"
-                        continue
-                    snapshot.metrics[index] = PointMetric(
+                try:
+                    value = number(result, "total_live_points")
+                except Exception:
+                    snapshot.metrics[0].reason = "官方积分数据缺失或格式异常，请稍后刷新"
+                else:
+                    metric = snapshot.metrics[0]
+                    snapshot.metrics[0] = PointMetric(
                         key=metric.key,
                         label=metric.label,
                         scope=metric.scope,

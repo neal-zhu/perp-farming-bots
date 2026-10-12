@@ -702,12 +702,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         points_button = ui.button("刷新积分", icon="refresh", on_click=refresh_points).props(
                             "outline"
                         )
-                    ui.label(
-                        "直接读取官方数据，每 2 分钟自动更新。积分属于账户或钱包，不分摊到单个 Bot。"
-                    ).classes("text-slate-600")
-                    ui.label(
-                        "实时总积分与累计、上周统计来自不同接口，可能不同步；分别展示，不相加。"
-                    ).classes("text-sm text-slate-500")
+                    ui.label("直接读取账户自己的官方积分，每 2 分钟自动更新。积分不分摊到单个 Bot。").classes(
+                        "text-slate-600"
+                    )
                     points_feed = PointsFeed(runtime.points)
                 with ui.tab_panel(alerts_tab).classes("p-0 gap-4"):
                     alerts_view()

@@ -42,7 +42,8 @@ def metrics(snapshot):
     return {m.key: m for m in snapshot.metrics}
 
 
-async def test_native_points_contract_and_zero_are_read_without_trading(env, monkeypatch):
+@pytest.mark.parametrize("value", [Decimal("2.137635570967187"), Decimal(0)])
+async def test_only_own_live_points_are_read_without_statistics_or_trading(env, monkeypatch, value):
     store, runtime, a, b = env
     bot = make_bot(store, a, b)
     rh = add_lighter(env, monkeypatch)
@@ -53,56 +54,42 @@ async def test_native_points_contract_and_zero_are_read_without_trading(env, mon
         reads.append(request)
         assert request.method == "GET"
         assert request.url.params["account_index"] == "12"
-        provider = Provider.LIGHTER_RH if request.url.host == "api.rh.lighter.xyz" else Provider.LIGHTER
-        assert request.headers["authorization"] == f"test-token-{provider.value}-12"
-        if request.url.path == "/api/v1/livePoints/total":
-            assert provider == Provider.LIGHTER_RH
-            return httpx.Response(200, text='{"code":200,"total_live_points":2.137635570967187}')
-        assert request.url.path == "/api/v1/referral/points"
-        return httpx.Response(
-            200,
-            json={
-                "user_total_points": 0,
-                "user_last_week_points": 0,
-                "user_total_referral_reward_points": 500,
-                "referrals": [{"total_points": 1000}],
-            },
-        )
+        assert request.url.host == "api.rh.lighter.xyz"
+        assert request.headers["authorization"] == "test-token-lighter_robinhood-12"
+        assert request.url.path == "/api/v1/livePoints/total"
+        return httpx.Response(200, text='{"code":200,"total_live_points":' + str(value) + "}")
 
     await runtime.markets.http.aclose()
     monkeypatch.setattr(runtime.markets, "http", httpx.AsyncClient(transport=httpx.MockTransport(handle)))
     await runtime.points.refresh_all()
     rh_metrics = metrics(runtime.points.view(rh.id))
-    assert rh_metrics["live_total"].value == Decimal("2.137635570967187")
+    assert rh_metrics["live_total"].value == value
     assert rh_metrics["live_total"].scope == "account"
-    assert rh_metrics["reported_total"].value == rh_metrics["last_week"].value == Decimal(0)
-    assert rh_metrics["reported_total"].scope == "unknown"
-    assert all(m.status == "available" for m in rh_metrics.values())
-    assert set(metrics(runtime.points.view(core.id))) == {"reported_total", "last_week"}
-    assert len(reads) == 3
-    assert {r.url.host for r in reads} == {"api.rh.lighter.xyz", "mainnet.zklighter.elliot.ai"}
+    assert set(rh_metrics) == {"live_total"}
+    assert rh_metrics["live_total"].status == "available"
+    assert runtime.points.view(core.id).metrics[0].status == "unsupported"
+    assert runtime.points.view(core.id).metrics[0].value is None
+    runtime.accounts.adapter(core.id).auth.assert_not_awaited()
+    assert len(reads) == 1
     assert store.bot(bot.id) == bot and store.bot_orders(bot.id) == []
     for c in [rh, core]:
         runtime.accounts.adapter(c.id).send.assert_not_awaited()
     await runtime.points.refresh_all()
-    assert len(reads) == 3, "rapid clicks must coalesce with polling"
+    assert len(reads) == 1, "rapid clicks must coalesce with polling"
 
 
 @pytest.mark.parametrize("raw", [None, True, "0", -1, float("nan"), float("inf")])
-async def test_invalid_value_never_becomes_zero_or_erases_other_valid_metrics(env, monkeypatch, raw):
+async def test_invalid_own_points_value_never_becomes_zero(env, monkeypatch, raw):
     _, runtime, _, _ = env
     rh = add_lighter(env, monkeypatch)
 
     async def request(provider, path, index, token):
-        if path.endswith("/total"):
-            return {"total_live_points": raw}
-        return {"user_total_points": 0, "user_last_week_points": 0}
+        return {"total_live_points": raw}
 
     monkeypatch.setattr(runtime.points, "request", request)
     result = metrics(await runtime.points.refresh(rh.id))
     assert result["live_total"].status == "unavailable"
     assert result["live_total"].value is result["live_total"].received_at is None
-    assert result["reported_total"].status == "available" and result["reported_total"].value == 0
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])
@@ -138,26 +125,28 @@ async def test_failed_refresh_discards_cached_success_and_sanitizes_native_respo
         assert all("限流" in m.reason for m in failed.metrics)
 
 
-async def test_missing_weekly_field_and_stale_live_data_are_explicit(env, monkeypatch):
+async def test_missing_own_points_does_not_use_old_zero_statistics(env, monkeypatch):
     _, runtime, _, _ = env
     rh = add_lighter(env, monkeypatch)
     monkeypatch.setattr(
         runtime.points,
         "request",
-        AsyncMock(
-            return_value={
-                "total_live_points": 3,
-                "user_total_points": 1,
-            }
-        ),
+        AsyncMock(return_value={"user_total_points": 0, "user_last_week_points": 0}),
     )
     result = metrics(await runtime.points.refresh(rh.id))
-    assert result["last_week"].status == "unavailable" and result["last_week"].value is None
+    assert set(result) == {"live_total"}
+    assert result["live_total"].status == "unavailable" and result["live_total"].value is None
+
+
+async def test_stale_own_points_are_explicit(env, monkeypatch):
+    _, runtime, _, _ = env
+    rh = add_lighter(env, monkeypatch)
+    monkeypatch.setattr(runtime.points, "request", AsyncMock(return_value={"total_live_points": 3}))
+    result = metrics(await runtime.points.refresh(rh.id))
     result["live_total"].received_at = time.time() - MAX_AGE_SECONDS - 1
     view = metrics(runtime.points.view(rh.id))
     assert view["live_total"].status == "unavailable" and view["live_total"].value is None
     assert "过期" in view["live_total"].reason
-    assert view["reported_total"].value == 1
 
 
 async def test_arcus_is_deferred_and_does_not_make_points_requests(env, monkeypatch):
@@ -245,7 +234,10 @@ async def test_page_refresh_changes_only_numbers_and_preserves_unsaved_account_f
     assert set(points_page.elements) == original_ids
     assert name.value == "尚未保存的账户"
     assert any(isinstance(e, ui.label) and e.text == "2.1376" for e in points_page.elements.values())
-    assert sum(isinstance(e, ui.label) and e.text == "0.0000" for e in points_page.elements.values()) == 2
+    labels = [e.text for e in points_page.elements.values() if isinstance(e, ui.label)]
+    assert "我的积分" in labels
+    assert not any("累计" in label or "上周" in label for label in labels)
+    assert "0.0000" not in labels
     assert runtime.accounts.adapters
 
 
@@ -258,6 +250,8 @@ async def test_points_api_reports_scopes_and_missing_values_without_secrets(env,
         result = client.get("/api/points").json()
         assert result[0]["metrics"][0]["status"] == "unsupported"
         assert result[0]["metrics"][0]["value"] is None
+        assert len(result[-1]["metrics"]) == 1
+        assert result[-1]["metrics"][0]["key"] == "live_total"
         assert result[-1]["metrics"][0]["value"] == "2.137635570967187"
         assert "test-token" not in json.dumps(result) and "api_private_key" not in json.dumps(result)
         assert client.post("/api/points/refresh").status_code == 200
