@@ -1,18 +1,18 @@
 # Implementation slices and acceptance
 
-Status: proposed; no slice has been implemented. Scope is a single-owner self-hosted application, not a hosted multi-tenant service. Estimates in DESIGN.md are conditional planning estimates.
+Status: proposed; no slice has been implemented. Scope is Perp Farming Bots, a single-owner self-hosted application with built-in trading strategies. The first delivered strategy is spread hedging; estimates in DESIGN.md cover that strategy and do not include unspecified grid/scalping implementation.
 
 ## Slice 1 — Runnable read-only application
 
-Create Python packaging, release dependency locks, NiceGUI pages, SQLite migrations, administrator login, local encrypted connection storage, structured redacted logs and a Docker image. Validate Lighter SDK native signer import on the advertised Linux architectures. Use a read-only Lighter RH connection for actual public market data.
+Create Python packaging, release dependency locks, NiceGUI strategy catalog and bot pages, SQLite migrations, administrator login, local encrypted connection storage, structured redacted logs and a Docker image. The catalog labels spread hedging as planned for V1 and grid/scalping as future, not available. Validate Lighter SDK native signer import on the advertised Linux architectures. Use a read-only Lighter RH connection for actual public market data.
 
 Acceptance: a clean supported host can start the image; user connects from browser, sees real catalog and live/expired status; restarting preserves settings; no code path can submit a trade in read-only mode. Docker installation is a documented prerequisite, not an existing feature of this repository.
 
 ## Slice 2 — Persistent multi-lot paper workflow
 
-Implement create/preview/cancel/close commands, Decimal quantities, same-direction shared-net lot allocation, account/market locking, account funds reservations, fill uniqueness and operation idempotency. Build a clearly labeled paper adapter with deterministic fault injection, not a mock that masquerades as a real venue.
+Implement explicit bot identities, versioned strategy parameters/state, create/preview/pause/stop/stop-and-close commands and the first spread-hedging module. Keep one-leg and multi-leg execution operation types explicit. Add Decimal quantities, same-direction shared-net lot allocation, account/market locking, account funds reservations, fill uniqueness and operation idempotency. Build a clearly labeled paper adapter with deterministic fault injection, not a mock that masquerades as a real venue.
 
-Acceptance: two lots on the same pair can be independently opened and closed; multiple pairs run concurrently; opposing lot requests on one native account/contract are rejected before dispatch; repeated commands return the same operation. Paper results are never shown as official fills or official points.
+Acceptance: two bots/lots on the same pair can be independently opened and closed; multiple pairs run concurrently; opposing lot requests on one native account/contract are rejected before dispatch; repeated commands return the same operation. Pause/stop/close are distinct; a stopped bot's remaining inventory stays visible. A single-leg execution lifecycle contract verifies the shared module is not pair-only. Paper results are never shown as official fills or official points.
 
 ## Slice 3 — Durable Lighter submission and recovery
 
@@ -50,9 +50,21 @@ Provide pinned non-root images, Compose instructions, first-start connection wiz
 
 Acceptance: test from a clean supported machine; admin actions are authenticated on HTTP/UI/real-time transport; secrets never enter exports/logs/browser persistent storage; restore warns against concurrent old/new instances and resumes original submissions before new trading. Publish only genuinely validated venues and container architectures.
 
+## Slice 9 — Built-in grid strategy
+
+Specify direction, price range, grid count/spacing, inventory and order budget, out-of-range behavior and pause/stop behavior before implementation. Reuse public connectors, submit recovery, Decimal accounting, order ownership, PnL and notifications; implement only grid level state, order scheduling and fill-driven replacement in the grid module.
+
+Acceptance: partial fills, cancel/fill races and restart do not duplicate grid orders; stopping cancels only this bot's orders and retains visible allocated inventory; stop-and-close drains known owned orders before closing final inventory. Initially reserve the native account/contract exclusively for this bot until cross-strategy net ownership is verified. No implicit portfolio stop-loss or margin adjustment.
+
+## Slice 10 — Built-in scalping strategy
+
+Define the exact entry/exit signal, market/order type, single-trade amount, cumulative budget, cooldown and termination conditions. “Scalping” alone is not an executable specification. Reuse the same runtime; keep its signal/round-trip state in a strategy-owned versioned module.
+
+Acceptance: cost/fees and real fills are measured; delayed or unknown orders cannot start a duplicate round trip; explicit rule-based exits are documented user-selected behavior; an aborted strategy is not misreported as a flat account. Independently validate order-rate constraints and strategy sharing before live release.
+
 ## Expansion after beta
 
-Add other public-library venues individually through the same connector contracts. Inverse/complex-unit instruments, opposing same-account positions, desktop installers, sophisticated order routing and automated risk strategies are independent milestones; do not add compatibility fields or guessed behavior to imply support.
+Add other public-library venues individually through the same connector contracts. Inverse/complex-unit instruments, opposing same-account positions, desktop installers, sophisticated order routing and optional portfolio risk management are independent milestones; do not add compatibility fields or guessed behavior to imply support. Reevaluate complete public strategy frameworks if a later strategy's actual requirements make them cheaper than the small current runtime; preserve verified licenses and user-visible referral/fee behavior.
 
 ## Release-critical failure matrix
 

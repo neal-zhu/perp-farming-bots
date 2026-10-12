@@ -11,7 +11,14 @@
 - Unknown order, fill, fee, balance, funding, or points states must remain explicit. Never substitute a zero or a guessed success.
 - Do not add compatibility shims, silent fallback fields, or duplicate representations that conceal correctness problems.
 
+## Product and strategy scope
+
+- The product is Perp Farming Bots: a self-hosted application with built-in perpetual trading strategies. Hedging is the first strategy, not the product identity or the shared runtime's data model.
+- Model bot instances, strategy-owned state, allocated inventory, orders and execution operations explicitly. Shared execution must support one or multiple legs without making every action a paired hedge.
+- Future grid and scalping rules require explicit product specifications; do not invent or enable them because their names appear in documentation.
+- Pause, stop, cancel outstanding orders and close allocated inventory are distinct user actions. No account-wide close-all to stop one bot.
+
 ## Trading authority
 
 - No live trades, production credentials, automatic risk actions, or upstream service messages without direct user authorization.
-- Preserve user-directed execution, durable recovery, and account-scoped isolation.
+- Preserve user-selected strategy authority, durable recovery, and account-scoped isolation. Strategy entries/exits must be declared in the selected strategy; the shared runtime must not add automatic portfolio risk trading.

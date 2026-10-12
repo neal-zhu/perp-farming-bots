@@ -1,4 +1,6 @@
-# Framework research for Perp Hedge Kit
+# Framework research for Perp Farming Bots
+
+Scope note: the verified comparison below was performed for the first spread-hedging strategy. The product now includes future grid/scalping strategy categories; no claim is made that the same framework ranking automatically applies to those undefined implementations. Current technical findings and pinned sources remain valid as the recorded research snapshot.
 
 Verified 2026-10-12 against public upstream repositories and first-party documentation. This research used no private trading repository, credentials, or live orders. Connector support below means source-level verification, not a successful authenticated trading test.
 
