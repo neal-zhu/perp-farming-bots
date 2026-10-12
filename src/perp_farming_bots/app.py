@@ -53,7 +53,9 @@ def main() -> None:
         if os.environ.get("PFB_ADMIN_PASSWORD") is not None
         else str(directory / "admin-password.txt")
     )
-    logging.getLogger(__name__).info("Paper-only execution. Login: admin. Password source: %s", password_source)
+    logging.getLogger(__name__).info(
+        "Paper-only execution. Login: admin. Password source: %s", password_source
+    )
     ui.run(
         host=os.environ.get("PFB_HOST", "127.0.0.1"),
         port=int(os.environ.get("PFB_PORT", "8080")),
