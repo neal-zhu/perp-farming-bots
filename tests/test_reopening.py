@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from nicegui import ui
 from pydantic import ValidationError
-from sqlalchemy import delete, update
+from sqlalchemy import update
 from test_account_form import click
 from test_account_form import page as page
 from test_bot_management import bot_page as bot_page
@@ -14,7 +14,7 @@ from test_runtime import make_bot, open_bot
 
 from perp_farming_bots import runtime as runtime_module
 from perp_farming_bots.models import BotState, BotUpdate, HedgeParameters, OrderResult
-from perp_farming_bots.store import Store, bot_cycles, bots, fills
+from perp_farming_bots.store import Store, fills
 
 
 def configure(store, bot, **parameters):
@@ -196,33 +196,6 @@ async def test_late_fee_enrichment_of_old_cycle_does_not_change_new_inventory_or
     store.apply_order_result(first_order["id"], previous.model_copy(update={"fee": Decimal("2")}))
     assert store.positions(bot.id) == current
     assert store.turnover(bot.id) == volume
-
-
-async def test_schema_three_migration_disables_reopening_and_preserves_native_history(env):
-    store, runtime, a, b = env
-    bot = await open_bot(store, runtime, a, b)
-    inventory, history = store.positions(bot.id), store.bot_orders(bot.id)
-    path = Path(store.engine.url.database)
-    import json
-
-    with store.transaction() as db:
-        parameters = bot.parameters.model_dump(
-            mode="json", exclude={"reopen_interval_seconds", "reopen_random_wait_seconds"}
-        )
-        db.execute(update(bots).where(bots.c.id == bot.id).values(parameters=json.dumps(parameters)))
-        db.execute(delete(bot_cycles))
-        db.exec_driver_sql("PRAGMA user_version=3")
-    store.close()
-    migrated = Store(path)
-    try:
-        assert migrated.bot(bot.id).state == BotState.HOLDING
-        assert migrated.bot(bot.id).parameters.reopen_interval_seconds is None
-        assert migrated.positions(bot.id) == inventory
-        assert migrated.bot_orders(bot.id) == history
-        assert migrated.cycle(bot.id)["next_reopen_at"] is None
-        assert migrated.cycle(bot.id)["open_operation_id"] == history[0]["operation_id"]
-    finally:
-        migrated.close()
 
 
 @pytest.mark.parametrize(

@@ -1,9 +1,6 @@
-from pathlib import Path
-
 import pytest
 from nicegui import ui
 from pydantic import ValidationError
-from sqlalchemy import update
 from test_account_form import page as page
 from test_bot_management import bot_page as bot_page
 from test_bot_management import configured_bot as configured_bot
@@ -11,7 +8,6 @@ from test_runtime import make_bot, open_bot
 
 from perp_farming_bots.api import Command
 from perp_farming_bots.models import BotState
-from perp_farming_bots.store import Store, bots
 
 
 async def test_run_pauses_and_resumes_without_repeating_entry(env):
@@ -61,30 +57,6 @@ async def test_close_without_inventory_does_not_change_waiting_state(env):
         await runtime.command(bot.id, "close")
     assert store.bot(bot.id).state == BotState.WAITING
     assert runtime.accounts.adapter(a.id).sent == []
-
-
-@pytest.mark.parametrize("uncertain", [False, True])
-async def test_schema_two_stopped_bots_migrate_explicitly_without_changing_inventory(env, uncertain):
-    store, runtime, a, b = env
-    bot = await open_bot(store, runtime, a, b)
-    original = store.positions(bot.id)
-    if uncertain:
-        store.operation(bot.id, "close")
-    path = Path(store.engine.url.database)
-    with store.transaction() as db:
-        db.execute(update(bots).where(bots.c.id == bot.id).values(state="stopped"))
-        db.exec_driver_sql("PRAGMA user_version=2")
-    store.close()
-    migrated = Store(path)
-    try:
-        assert migrated.bot(bot.id).state == (BotState.ATTENTION if uncertain else BotState.PAUSED)
-        assert migrated.bot(bot.id).parameters == bot.parameters
-        assert migrated.positions(bot.id) == original
-        assert len(runtime.accounts.adapter(a.id).sent) == 1
-        with migrated.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 6
-    finally:
-        migrated.close()
 
 
 @pytest.mark.parametrize("old_action", ["start", "resume", "stop"])

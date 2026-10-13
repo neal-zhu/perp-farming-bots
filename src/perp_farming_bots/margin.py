@@ -33,8 +33,6 @@ class Margin:
 
     def validate(self, p: GridParameters, snapshot: MarginSnapshot) -> None:
         capital = p.capital
-        if not isinstance(capital, GridMarginCapital):
-            return
         if capital.leverage > snapshot.max_leverage:
             raise ValueError(f"该市场最高可设置 {snapshot.max_leverage.normalize():f} 倍杠杆")
         provider = self.runtime.store.connection(p.connection_id).provider
@@ -44,7 +42,7 @@ class Margin:
     async def verify(self, p: GridParameters) -> MarginSnapshot:
         snapshot = await self.read(p.connection_id, p.symbol)
         self.validate(p, snapshot)
-        if isinstance(p.capital, GridMarginCapital) and not matches(snapshot, p.capital):
+        if not matches(snapshot, p.capital):
             raise ValueError("交易所杠杆或保证金模式与 Bot 参数不一致；已停止新动作，请核实设置后恢复")
         return snapshot
 
@@ -52,8 +50,6 @@ class Margin:
         p = bot.parameters
         assert isinstance(p, GridParameters)
         capital = p.capital
-        if not isinstance(capital, GridMarginCapital):
-            return
         r = self.runtime
         snapshot = await self.read(p.connection_id, p.symbol)
         self.validate(p, snapshot)

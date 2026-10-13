@@ -1,10 +1,9 @@
-"""Native units, pre-trade configuration confirmation and explicit legacy migration."""
+"""Native units, pre-trade configuration confirmation and strict current configuration."""
 
 import asyncio
 import json
 import time
 from decimal import Decimal
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,12 +26,12 @@ from perp_farming_bots.models import (
     Provider,
 )
 from perp_farming_bots.notifications import Notifications
-from perp_farming_bots.store import Store, bots, fills, operations
+from perp_farming_bots.store import fills
 from perp_farming_bots.trading import Arcus, Lighter
 
 
 def capital(amount="248", leverage=10, mode="isolated"):
-    return GridMarginCapital(kind="margin", investment_usd=amount, leverage=leverage, margin_mode=mode)
+    return GridMarginCapital(investment_usd=amount, leverage=leverage, margin_mode=mode)
 
 
 def lighter_value(provider=Provider.LIGHTER_RH):
@@ -370,44 +369,7 @@ async def test_native_limits_and_unrepresentable_leverage_reject_before_save_or_
     assert runtime.accounts.adapter(account.id).margin_sent == []
 
 
-async def test_schema_five_migration_keeps_legacy_notional_and_all_execution_evidence(env, monkeypatch):
-    store, runtime, account, _ = env
-    _, adapter = await grid_market(runtime, account, monkeypatch)
-    bot = grid_bot(store, account, "long")
-    await runtime.command(bot.id, "run")
-    assert await runtime.grid.tick(bot.id)
-    before = (
-        store.grid_state(bot.id),
-        store.positions(bot.id),
-        store.bot_orders(bot.id),
-        store.rows(fills, bot.id),
-        store.rows(operations, bot.id),
-        store.turnover(bot.id),
-    )
-    legacy = bot.parameters.model_dump(mode="json", exclude={"capital"})
-    legacy["budget_usd"] = "2480"
-    with store.transaction() as db:
-        db.execute(update(bots).where(bots.c.id == bot.id).values(parameters=json.dumps(legacy)))
-        db.exec_driver_sql("PRAGMA user_version=5")
-        db.exec_driver_sql("DROP TABLE margin_changes")
-    migrated = Store(Path(store.engine.url.database))
-    try:
-        p = migrated.bot(bot.id).parameters
-        assert p.capital.kind == "notional" and p.notional_limit == 2480
-        assert (
-            migrated.grid_state(bot.id),
-            migrated.positions(bot.id),
-            migrated.bot_orders(bot.id),
-            migrated.rows(fills, bot.id),
-            migrated.rows(operations, bot.id),
-            migrated.turnover(bot.id),
-        ) == before
-        assert migrated.bot_margin_changes(bot.id) == [] and adapter.margin_sent == []
-    finally:
-        migrated.close()
-
-
-async def test_only_closed_flat_grid_can_convert_legacy_capital_preserving_history(env, monkeypatch):
+async def test_closed_flat_grid_can_change_margin_capital_preserving_history(env, monkeypatch):
     store, runtime, account, _ = env
     await grid_market(runtime, account, monkeypatch)
     bot = grid_bot(store, account, "long")
@@ -434,17 +396,3 @@ async def test_old_budget_api_payload_is_explicitly_invalid_instead_of_silently_
     p["budget_usd"] = "20"
     with pytest.raises(ValidationError):
         GridParameters.model_validate(p)
-
-
-async def test_migration_rejects_ambiguous_dual_capital_instead_of_overwriting_it(env):
-    store, _, account, _ = env
-    bot = grid_bot(store, account)
-    ambiguous = bot.parameters.model_dump(mode="json")
-    ambiguous["budget_usd"] = "20"
-    with store.transaction() as db:
-        db.execute(update(bots).where(bots.c.id == bot.id).values(parameters=json.dumps(ambiguous)))
-        db.exec_driver_sql("PRAGMA user_version=5")
-    with pytest.raises(ValueError, match="同时存在"):
-        Store(Path(store.engine.url.database))
-    with store.engine.connect() as db:
-        assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 5

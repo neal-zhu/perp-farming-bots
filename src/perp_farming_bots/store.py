@@ -207,86 +207,19 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 2, 3, 4, 5, 6}:
-                raise ValueError(f"Unsupported database schema version {version}")
+            if version not in {0, 7}:
+                raise ValueError(f"Unsupported database schema version {version}; expected 7")
+            if (
+                version == 0
+                and db.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).first()
+                is not None
+            ):
+                raise ValueError("Database has no schema version; use a new database")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            if version < 4:
-                for row in db.execute(select(bots)).mappings():
-                    parameters = json.loads(row["parameters"])
-                    if "reopen_interval_seconds" not in parameters:
-                        parameters["reopen_interval_seconds"] = None
-                    if "reopen_random_wait_seconds" not in parameters:
-                        parameters["reopen_random_wait_seconds"] = 300
-                    db.execute(
-                        update(bots).where(bots.c.id == row["id"]).values(parameters=json.dumps(parameters))
-                    )
-                    latest_open = (
-                        db.execute(
-                            select(operations)
-                            .where(operations.c.bot_id == row["id"], operations.c.kind == "open")
-                            .order_by(operations.c.created_at.desc(), literal_column("rowid").desc())
-                        )
-                        .mappings()
-                        .first()
-                    )
-                    existing_cycle = db.execute(
-                        select(bot_cycles.c.bot_id).where(bot_cycles.c.bot_id == row["id"])
-                    ).first()
-                    if existing_cycle is None:
-                        db.execute(
-                            insert(bot_cycles).values(
-                                bot_id=row["id"],
-                                number=1,
-                                open_operation_id=latest_open["id"] if latest_open else None,
-                                opened_at=latest_open["updated_at"]
-                                if latest_open and latest_open["status"] == "completed"
-                                else None,
-                                next_reopen_at=None,
-                                entry_not_before=None,
-                            )
-                        )
-            if version == 2:
-                # Explicit lifecycle migration; never decode old stop states
-                # through an alias, and never start a strategy during migration.
-                stopped = list(db.execute(select(bots.c.id).where(bots.c.state == "stopped")).scalars())
-                for bot_id in stopped:
-                    owned = self.positions(bot_id)
-                    attention = (
-                        self.bot_pending(bot_id)
-                        or bool(owned)
-                        and (len(owned) != 2 or owned[0].quantity != owned[1].quantity)
-                    )
-                    db.execute(
-                        update(bots)
-                        .where(bots.c.id == bot_id)
-                        .values(
-                            state=BotState.ATTENTION.value if attention else BotState.PAUSED.value,
-                            reason="旧版已停止状态迁移：需要核实订单或持仓"
-                            if attention
-                            else "旧版已停止状态已迁移为暂停；持仓保留",
-                            updated_at=time.time(),
-                        )
-                    )
-            if version < 6:
-                for row in db.execute(select(bots).where(bots.c.strategy == "grid")).mappings():
-                    parameters = json.loads(row["parameters"])
-                    if "budget_usd" in parameters:
-                        if "capital" in parameters:
-                            raise ValueError("网格同时存在旧预算和新资金配置，不能判断真实含义")
-                        parameters["capital"] = {
-                            "kind": "notional",
-                            "notional_usd": parameters.pop("budget_usd"),
-                        }
-                        GridParameters.model_validate(parameters)
-                        db.execute(
-                            update(bots)
-                            .where(bots.c.id == row["id"])
-                            .values(parameters=json.dumps(parameters))
-                        )
-                    else:
-                        GridParameters.model_validate(parameters)
-            db.exec_driver_sql("PRAGMA user_version=6")
+            db.exec_driver_sql("PRAGMA user_version=7")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -453,6 +386,7 @@ class Store:
         if self.bot_pending(bot_id):
             raise ValueError("有未确认订单或操作，不能删除；请先同步并处理")
         with self.transaction() as db:
+            db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
             db.execute(delete(bots).where(bots.c.id == bot_id))
 
     def bot_pending(self, bot_id: str) -> bool:
@@ -464,26 +398,58 @@ class Store:
     def bot_editability(self, bot_id: str) -> dict[str, bool]:
         bot = self.bot(bot_id)
         pending = self.bot_pending(bot_id)
+        empty = not self.positions(bot_id)
+        untouched = not self.bot_orders(bot_id) and self.grid_state(bot_id) is None
+        entry = (
+            not pending
+            and empty
+            and untouched
+            and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED}
+        )
+        if isinstance(bot.parameters, GridParameters):
+            entry = (
+                not pending
+                and empty
+                and (
+                    bot.state in {BotState.READY, BotState.PAUSED, BotState.CLOSED}
+                    or untouched
+                    and bot.state == BotState.WAITING
+                )
+            )
         return {
-            "capital": not pending
-            and not self.positions(bot_id)
+            "capital": entry
+            if isinstance(bot.parameters, GridParameters)
+            else not pending
+            and empty
             and (
                 bot.state == BotState.CLOSED
                 or not self.bot_orders(bot_id)
                 and self.grid_state(bot_id) is None
                 and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED}
             ),
-            "entry_parameters": not pending
-            and not self.positions(bot_id)
-            and not self.bot_orders(bot_id)
-            and self.grid_state(bot_id) is None
-            and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED},
+            "entry_parameters": entry,
+            "binding_parameters": entry
+            and (not isinstance(bot.parameters, GridParameters) or not self.bot_orders(bot_id)),
             "slippage": not pending and bot.state != BotState.ATTENTION,
             "reopen": not pending and bot.state != BotState.ATTENTION,
             "delete": not pending
             and not self.positions(bot_id)
             and bot.state in {BotState.READY, BotState.PAUSED, BotState.CLOSED},
         }
+
+    def check_grid_update(self, bot_id: str, parameters: GridParameters) -> None:
+        old = self.bot(bot_id).parameters
+        if not isinstance(old, GridParameters):
+            raise ValueError("不能修改 Bot 的策略类型，请新建 Bot")
+        editable = self.bot_editability(bot_id)
+        if parameters.model_dump(exclude={"slippage_bps"}) != old.model_dump(exclude={"slippage_bps"}):
+            if not editable["entry_parameters"]:
+                raise ValueError("请先暂停网格；仍有仓位需先平仓，未确认订单或操作需先处理")
+            if (parameters.connection_id, parameters.symbol) != (
+                old.connection_id,
+                old.symbol,
+            ) and not editable["binding_parameters"]:
+                raise ValueError("已有订单记录，账户和币种固定；更换账户或币种请新建 Bot")
 
     def update_bot(self, bot_id: str, value: BotUpdate) -> Bot:
         bot = self.bot(bot_id)
@@ -498,14 +464,9 @@ class Store:
         if value.parameters.model_dump(include=entry_fields) != bot.parameters.model_dump(
             include=entry_fields
         ):
-            capital_only = (
-                isinstance(value.parameters, GridParameters)
-                and isinstance(bot.parameters, GridParameters)
-                and value.parameters.model_dump(exclude={"capital", "slippage_bps"})
-                == bot.parameters.model_dump(exclude={"capital", "slippage_bps"})
-                and editable["capital"]
-            )
-            if not editable["entry_parameters"] and not capital_only:
+            if isinstance(value.parameters, GridParameters):
+                self.check_grid_update(bot_id, value.parameters)
+            elif not editable["entry_parameters"]:
                 raise ValueError("已有订单或持仓，不能修改账户、币种、建仓金额或价差条件；请新建 Bot")
         if value.parameters.slippage_bps != bot.parameters.slippage_bps and not editable["slippage"]:
             raise ValueError("有未确认订单或需要处理的状态，不能修改滑点；请先同步并处理")
@@ -527,16 +488,22 @@ class Store:
             "parameters": value.parameters.model_dump_json(),
             "updated_at": time.time(),
         }
-        if value.parameters != bot.parameters and bot.state in {BotState.WAITING, BotState.PAUSED}:
+        grid_changed = (
+            isinstance(value.parameters, GridParameters)
+            and isinstance(bot.parameters, GridParameters)
+            and value.parameters.model_dump(exclude={"slippage_bps"})
+            != bot.parameters.model_dump(exclude={"slippage_bps"})
+        )
+        if grid_changed:
+            values.update(
+                state=BotState.CLOSED.value if bot.state == BotState.CLOSED else BotState.READY.value,
+                reason="参数已保存，点击运行启动网格",
+            )
+        elif value.parameters != bot.parameters and bot.state in {BotState.WAITING, BotState.PAUSED}:
             if editable["entry_parameters"]:
                 values.update(state=BotState.READY.value, reason="参数已修改，请重新点击运行")
         with self.transaction() as db:
-            if (
-                isinstance(value.parameters, GridParameters)
-                and isinstance(bot.parameters, GridParameters)
-                and value.parameters.capital != bot.parameters.capital
-                and bot.state == BotState.CLOSED
-            ):
+            if grid_changed:
                 db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
             db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
             if interval_changed:
@@ -580,7 +547,7 @@ class Store:
             if isinstance(bot.parameters, GridParameters):
                 # Remove only the active layout; original orders, fills and action journals remain.
                 db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
-                reason = "重新运行，等待区间内价格后初始化网格；历史成交保留"
+                reason = "等待区间内价格后初始化网格"
             else:
                 assert isinstance(bot.parameters, HedgeParameters)
                 cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
@@ -595,7 +562,7 @@ class Store:
                         entry_not_before=None,
                     )
                 )
-                reason = "重新运行，等待原价差条件开始下一轮；历史成交保留"
+                reason = "等待价差条件开始下一轮"
             self.set_state(bot_id, BotState.WAITING, reason, db)
 
     def begin_margin_change(

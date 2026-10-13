@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from nicegui import ui
 from pydantic import ValidationError
-from sqlalchemy import select
 from test_account_form import click
 from test_account_form import page as page
 from test_runtime import make_bot
@@ -17,7 +16,7 @@ from test_runtime import make_bot
 from perp_farming_bots.grid import GridPreview
 from perp_farming_bots.models import Book, BotCreate, BotState, BotUpdate, GridParameters, Level
 from perp_farming_bots.runtime import Runtime
-from perp_farming_bots.store import Store, fills, grid_states, orders
+from perp_farming_bots.store import Store, fills, orders
 
 
 def grid_bot(store, account, direction="neutral", **changes):
@@ -28,7 +27,7 @@ def grid_bot(store, account, direction="neutral", **changes):
         lower_price="58000",
         upper_price="62000",
         grid_count=4,
-        capital={"kind": "notional", "notional_usd": "2480"},
+        capital={"investment_usd": "1240", "leverage": 2, "margin_mode": "cross"},
     )
     params.update(changes)
     return store.add_bot(
@@ -216,7 +215,7 @@ async def test_grid_owns_account_symbol_and_cannot_mix_with_another_bot(env):
                     lower_price=58000,
                     upper_price=62000,
                     grid_count=4,
-                    capital={"kind": "notional", "notional_usd": 1000},
+                    capital={"investment_usd": 1000, "leverage": 1, "margin_mode": "cross"},
                 ),
             )
         )
@@ -274,32 +273,13 @@ async def test_partial_close_leaves_only_owned_remainder_and_can_be_closed_again
     assert store.bot(bot.id).state == BotState.CLOSED and adapter.net == 0
 
 
-async def test_grid_schema_four_migration_preserves_existing_hedge(env):
-    store, _, a, b = env
-    bot = make_bot(store, a, b)
-    before = bot.model_dump()
-    with store.transaction() as db:
-        db.exec_driver_sql("PRAGMA user_version=4")
-        db.exec_driver_sql("DROP TABLE grid_states")
-        db.exec_driver_sql("DROP TABLE grid_actions")
-    migrated = Store(Path(store.engine.url.database))
-    try:
-        assert migrated.bot(bot.id).model_dump() == before
-        assert migrated.grid_state(bot.id) is None
-        with migrated.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 6
-            assert list(db.execute(select(grid_states))) == []
-    finally:
-        migrated.close()
-
-
 @pytest.mark.parametrize(
     "changes",
     [
         {"grid_count": 3},
         {"lower_price": 62000},
         {"grid_count": 4.5},
-        {"capital": {"kind": "notional", "notional_usd": "NaN"}},
+        {"capital": {"investment_usd": "NaN", "leverage": 1, "margin_mode": "cross"}},
     ],
 )
 async def test_invalid_grid_parameters_are_rejected_explicitly(env, changes):

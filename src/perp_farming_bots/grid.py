@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
 from .markets import QuoteUnavailable, require_fresh_book
-from .models import Bot, BotCreate, BotState, BotUpdate, GridMarginCapital, GridParameters, StrictModel
+from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, StrictModel
 from .store import operations
 
 if TYPE_CHECKING:
@@ -60,9 +60,8 @@ class Grid:
         r = self.runtime
         owner = value.id if isinstance(value, Bot) else bot_id
         r.store.check_strategy_accounts(p, bot_id=owner)
-        if isinstance(p.capital, GridMarginCapital):
-            margin = await r.margin.read(p.connection_id, p.symbol)
-            r.margin.validate(p, margin)
+        margin = await r.margin.read(p.connection_id, p.symbol)
+        r.margin.validate(p, margin)
         connection = r.store.connection(p.connection_id)
         spec = await r.markets.spec(connection.provider, p.symbol)
         low = bounded_price(p.lower_price, spec, "buy")
@@ -74,14 +73,14 @@ class Grid:
         minimum_quantity = (
             max(spec.quantity_step, spec.min_quantity, spec.min_notional / levels[0]) / spec.quantity_step
         ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
-        leverage = p.capital.leverage if isinstance(p.capital, GridMarginCapital) else 1
+        leverage = p.capital.leverage
         minimum_budget = minimum_quantity * levels[-1] * max_units / leverage
         minimum_budget_cents = minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
         quantity = quantity_floor(p.notional_limit / levels[-1] / max_units, spec.quantity_step)
         if quantity <= 0 or quantity < spec.min_quantity or quantity * levels[0] < spec.min_notional:
             raise ValueError(
                 f"每格数量 {quantity} {p.symbol} 低于最小订单要求。"
-                f"按此区间和 {p.grid_count} 格，{'保证金额度' if isinstance(p.capital, GridMarginCapital) else '预算'}至少 ${minimum_budget_cents:,.2f}，"
+                f"按此区间和 {p.grid_count} 格，保证金额度至少 ${minimum_budget_cents:,.2f}，"
                 f"每格至少 {minimum_quantity} {p.symbol}。请先核对币种和价格区间，再调整格数或预算。"
             )
         await r._check_inventory(p.connection_id, p.symbol)
@@ -136,8 +135,7 @@ class Grid:
                     p, state["cursor"], Decimal(state["quantity_per_grid"])
                 ):
                     raise ValueError("网格成交数量未达到原目标；请平仓后新建 Bot，不会补单")
-                if isinstance(p.capital, GridMarginCapital):
-                    await r.margin.verify(p)
+                await r.margin.verify(p)
                 require_fresh_book(
                     await r.markets.book(r.store.connection(p.connection_id).provider, p.symbol, refresh=True)
                 )
@@ -173,8 +171,7 @@ class Grid:
                 r.store.check_grid_reservation(bot)
                 # A grid exclusively owns this account/symbol. External inventory/orders block it.
                 await r._check_inventory(p.connection_id, p.symbol)
-                if isinstance(p.capital, GridMarginCapital):
-                    await r.margin.verify(p)
+                await r.margin.verify(p)
                 state = r.store.grid_state(bot.id)
                 trigger: Decimal | None = None
                 if state is None:
@@ -221,9 +218,11 @@ class Grid:
                 if current and target and (current > 0) != (target > 0):
                     raise ValueError("网格必须先确认零仓位，再切换方向")
                 reduce = bool(current) and abs(target) < abs(current)
-                if not reduce and r.accounts.snapshots[p.connection_id].available < abs(
-                    delta
-                ) * p.upper_price / (p.capital.leverage if isinstance(p.capital, GridMarginCapital) else 1):
+                if (
+                    not reduce
+                    and r.accounts.snapshots[p.connection_id].available
+                    < abs(delta) * p.upper_price / p.capital.leverage
+                ):
                     raise ValueError("可用抵押资产不足以覆盖本格订单")
                 if delta:
                     side: Literal["buy", "sell"] = "buy" if delta > 0 else "sell"

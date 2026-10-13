@@ -20,7 +20,6 @@ from .models import (
     BotCreate,
     BotState,
     BotUpdate,
-    GridMarginCapital,
     GridParameters,
     HedgeParameters,
     MarketSpec,
@@ -182,11 +181,19 @@ class Runtime:
             return
         if bot_id is not None:
             previous = self.store.bot(bot_id)
+            self.store.check_grid_update(bot_id, value.parameters)
             entry_fields = set(GridParameters.model_fields) - {"slippage_bps"}
             if self.store.grid_state(bot_id) is not None and value.parameters.model_dump(
                 include=entry_fields
             ) == previous.parameters.model_dump(include=entry_fields):
                 return  # A name/slippage edit does not request a new inventory allocation.
+            assert isinstance(previous.parameters, GridParameters)
+            old = previous.parameters
+            if self.store.grid_state(bot_id) is not None and (old.connection_id, old.symbol) != (
+                value.parameters.connection_id,
+                value.parameters.symbol,
+            ):
+                await self._check_inventory(old.connection_id, old.symbol)
         await self.grid.preview(value, bot_id=bot_id)
 
     async def preview(
@@ -345,11 +352,7 @@ class Runtime:
         grid_bounds: tuple[Decimal, Decimal] | None = None,
     ) -> OrderResult:
         account = self.store.connection(connection_id)
-        if (
-            isinstance(bot.parameters, GridParameters)
-            and isinstance(bot.parameters.capital, GridMarginCapital)
-            and not reduce_only
-        ):
+        if isinstance(bot.parameters, GridParameters) and not reduce_only:
             await self.margin.verify(bot.parameters)
         spec = await self.markets.spec(account.provider, bot.parameters.symbol)
         if quantity_floor(quantity, spec.quantity_step) != quantity:

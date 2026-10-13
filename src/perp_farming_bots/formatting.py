@@ -3,13 +3,11 @@ from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from .models import GridMarginCapital, GridParameters
+from .models import GridParameters
 
 
 def grid_capital_text(p: GridParameters) -> str:
-    if isinstance(p.capital, GridMarginCapital):
-        return f"保证金额度 {money(p.capital.investment_usd)} · {p.capital.leverage} 倍 · {'全仓' if p.capital.margin_mode == 'cross' else '逐仓'} · 区间内仓位上限 {money(p.notional_limit)}"
-    return f"名义仓位额度 {money(p.notional_limit)}（沿用交易所设置）"
+    return f"保证金额度 {money(p.capital.investment_usd)} · {p.capital.leverage} 倍 · {'全仓' if p.capital.margin_mode == 'cross' else '逐仓'} · 区间内仓位上限 {money(p.notional_limit)}"
 
 
 def money(value: str | Decimal | None) -> str:

@@ -13,7 +13,7 @@ from test_grid import grid_bot
 
 from perp_farming_bots.api import register_routes
 from perp_farming_bots.grid_ui import grid_dialog
-from perp_farming_bots.models import BotCreate, BotUpdate, GridNotionalCapital, GridParameters
+from perp_farming_bots.models import BotCreate, BotUpdate, GridMarginCapital, GridParameters
 from perp_farming_bots.notifications import Notifications
 
 
@@ -30,7 +30,7 @@ async def test_grid_api_rejects_below_minimum_budget_before_saving(env):
             lower_price=58000,
             upper_price=62000,
             grid_count=4,
-            capital={"kind": "notional", "notional_usd": 10},
+            capital={"investment_usd": 10, "leverage": 1, "margin_mode": "cross"},
         ),
     )
     app = FastAPI()
@@ -40,6 +40,48 @@ async def test_grid_api_rejects_below_minimum_budget_before_saving(env):
     assert response.status_code == 400, "Invalid grid was saved; the minimum check happens only at run"
     assert store.bots() == []
     assert runtime.accounts.adapter(account.id).sent == []
+
+
+@pytest.mark.parametrize(
+    "capital",
+    [
+        {"kind": "notional", "notional_usd": "1000"},
+        {"kind": "margin", "investment_usd": "1000", "leverage": 2, "margin_mode": "cross"},
+        {"investment_usd": "1000", "leverage": 2, "margin_mode": "cross", "notional_usd": "2000"},
+    ],
+)
+async def test_grid_api_rejects_removed_capital_fields_without_conversion(env, capital):
+    store, runtime, account, _ = env
+    value = grid_bot(store, account).model_dump(mode="json")
+    store.delete_bot(value["id"])
+    payload = {
+        "name": value["name"],
+        "strategy": "grid",
+        "request_id": "invalid-capital",
+        "parameters": {**value["parameters"], "capital": capital},
+    }
+    app = FastAPI()
+    register_routes(app, store, runtime, Notifications(store, runtime.accounts.secrets))
+    with TestClient(app) as client:
+        response = client.post("/api/bots", json=payload)
+    assert response.status_code == 422 and store.bots() == []
+    adapter = runtime.accounts.adapter(account.id)
+    assert adapter.sent == adapter.margin_sent == []
+
+
+def test_grid_form_only_shows_current_margin_configuration(page, env):
+    store, runtime, _, _ = env
+    with page:
+        dialog = grid_dialog(store, runtime, "margin-form", lambda: None)
+    labels = [e.text for e in page.elements.values() if isinstance(e, ui.label)]
+    assert not any("旧配置" in text or "历史成交保留" in text for text in labels)
+    assert not any(isinstance(e, ui.select) and e.label == "资金计算方式" for e in page.elements.values())
+    for label in ["投入保证金额度（USD）", "杠杆倍数", "保证金模式"]:
+        field = next(
+            e for e in page.elements.values() if isinstance(e, (ui.number, ui.select)) and e.label == label
+        )
+        assert field.enabled and field.visible
+    dialog.delete()
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -65,7 +107,7 @@ async def test_grid_api_rejects_insufficient_or_unknown_balance_before_save(env,
             lower_price=58000,
             upper_price=62000,
             grid_count=4,
-            capital={"kind": "notional", "notional_usd": 500},
+            capital={"investment_usd": 500, "leverage": 1, "margin_mode": "cross"},
         ),
     )
     app = FastAPI()
@@ -89,7 +131,9 @@ async def test_grid_edit_preflight_excludes_own_reservation_and_blocks_invalid_b
     invalid = BotUpdate(
         name=bot.name,
         parameters=bot.parameters.model_copy(
-            update={"capital": GridNotionalCapital(kind="notional", notional_usd=Decimal("10"))}
+            update={
+                "capital": GridMarginCapital(investment_usd=Decimal("10"), leverage=1, margin_mode="cross")
+            }
         ),
     )
     with TestClient(app) as client:
@@ -99,7 +143,11 @@ async def test_grid_edit_preflight_excludes_own_reservation_and_blocks_invalid_b
         valid = BotUpdate(
             name=bot.name,
             parameters=bot.parameters.model_copy(
-                update={"capital": GridNotionalCapital(kind="notional", notional_usd=Decimal("124"))}
+                update={
+                    "capital": GridMarginCapital(
+                        investment_usd=Decimal("124"), leverage=1, margin_mode="cross"
+                    )
+                }
             ),
         )
         result = client.post(f"/api/bots/{bot.id}/preview", json=valid.model_dump(mode="json"))

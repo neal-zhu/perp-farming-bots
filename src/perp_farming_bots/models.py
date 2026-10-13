@@ -128,13 +128,7 @@ class HedgeParameters(StrictModel):
 GRID_DIRECTION_NAMES = {"long": "做多", "short": "做空", "neutral": "中性"}
 
 
-class GridNotionalCapital(StrictModel):
-    kind: Literal["notional"]
-    notional_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
-
-
 class GridMarginCapital(StrictModel):
-    kind: Literal["margin"]
     investment_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
     leverage: int = Field(ge=1, le=1000, strict=True)
     margin_mode: Literal["cross", "isolated"]
@@ -147,7 +141,7 @@ class GridParameters(StrictModel):
     lower_price: Decimal = Field(gt=0, allow_inf_nan=False)
     upper_price: Decimal = Field(gt=0, allow_inf_nan=False)
     grid_count: int = Field(ge=2, le=100, strict=True)
-    capital: GridNotionalCapital | GridMarginCapital = Field(discriminator="kind")
+    capital: GridMarginCapital
     slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
 
     @field_validator("symbol", mode="before")
@@ -169,14 +163,10 @@ class GridParameters(StrictModel):
 
     @property
     def notional_limit(self) -> Decimal:
-        if isinstance(self.capital, GridNotionalCapital):
-            return self.capital.notional_usd
         return self.capital.investment_usd * self.capital.leverage
 
     @property
     def collateral_budget(self) -> Decimal:
-        if isinstance(self.capital, GridNotionalCapital):
-            return self.capital.notional_usd
         return self.capital.investment_usd
 
     @property
