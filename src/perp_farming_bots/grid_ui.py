@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from decimal import ROUND_CEILING, Decimal
+from decimal import Decimal
 
 from nicegui import ui
 from nicegui.elements.mixins.disableable_element import DisableableElement
 from nicegui.elements.mixins.validation_element import ValidationElement
 from pydantic import ValidationError
 
-from .formatting import money, stamp
-from .grid import GridPreview
 from .models import GRID_DIRECTION_NAMES, PROVIDER_NAMES, BotCreate, BotUpdate, GridParameters
 from .runtime import Runtime, bounded_price
 from .store import Store
@@ -100,8 +98,6 @@ def grid_dialog(
                 .props("outlined dense hide-bottom-space")
                 .classes("flex-1 min-w-40")
             )
-        error = ui.label("").classes("text-sm text-red-600")
-        error.bind_visibility_from(error, "text", backward=bool)
 
         async def fill_range():
             revision = input_revision
@@ -164,7 +160,7 @@ def grid_dialog(
         ui.label("预算是区间内最大名义仓位上限，不是保证金；按交易所精度向下取整，每格数量固定。").classes(
             "text-xs text-slate-500"
         )
-        ui.label("预览和保存前都会检查账户余额、每格最低金额及该币种仓位；运行时再次核对。").classes(
+        ui.label("保存时自动检查账户余额和每格最低金额；不符合要求会在这里提示，运行时再次核对。").classes(
             "text-xs text-slate-500"
         )
         slippage = (
@@ -204,19 +200,14 @@ def grid_dialog(
             ui.label("到达相邻格线后提交限价 IOC；不在交易所提前挂单。跳过多格时逐格处理，按实际成交计账。")
             ui.label("价格超出区间时保留仓位，等待回到区间。暂停保留仓位；平仓结束运行。")
             ui.label("该账户的这个币种须由网格独占，不可与其他 Bot 或手动仓位共用。")
-        preview_box = ui.column().classes("w-full gap-1 bg-emerald-50 rounded-lg p-4 text-sm")
-        preview_box.set_visibility(False)
-        with preview_box:
-            initial_label = ui.label().classes("font-semibold")
-            size_label, range_label = ui.label(), ui.label()
-            funds_label = ui.label().classes("text-xs text-emerald-800")
+        error = ui.label("").classes("w-full text-sm text-red-600")
+        error.bind_visibility_from(error, "text", backward=bool)
         busy = False
         input_revision = 0
 
         def invalidate(*, clear_range: bool = False):
             nonlocal input_revision
             input_revision += 1
-            preview_box.set_visibility(False)
             error.set_text("")
             if clear_range:
                 lower.set_value(None)
@@ -248,51 +239,13 @@ def grid_dialog(
             error.set_text("" if valid else "请先修正标红的字段。")
             return valid
 
-        async def preview():
-            if not validate():
-                return
-            revision = input_revision
-            try:
-                result = await runtime.preview(value(), bot_id=bot_id)
-                assert isinstance(result, GridPreview)
-                if revision != input_revision or dialog.is_deleted:
-                    return
-                position = (
-                    "无初始仓位"
-                    if result.initial_quantity == 0
-                    else f"初始{'多仓' if result.initial_quantity > 0 else '空仓'} {abs(result.initial_quantity)} {symbol.value}"
-                )
-                initial_label.set_text(
-                    position
-                    + (
-                        " · 价格在区间外，将等待进入"
-                        if not result.inside_range
-                        else " · 当前无需初始下单"
-                        if result.initial_quantity == 0
-                        else " · 运行时下单"
-                    )
-                )
-                size_label.set_text(
-                    f"每格 {result.quantity_per_grid} {symbol.value} · 最大名义仓位 {money(result.max_notional)}"
-                )
-                range_label.set_text(
-                    f"实际格线区间 {money(result.levels[0])}–{money(result.levels[-1])} · 当前价 {money(result.current_price)}"
-                )
-                minimum = result.minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
-                funds_label.set_text(
-                    f"账户可用 {money(result.account_available)} · 此配置最低预算 {money(minimum)} · 检查于 {stamp(result.account_checked_at)}"
-                )
-                preview_box.set_visibility(True)
-            except ValueError as exc:
-                if revision == input_revision and not dialog.is_deleted:
-                    preview_box.set_visibility(False)
-                    error.set_text(str(exc))
-
         async def save():
             nonlocal busy
             if busy or not validate():
                 return
             busy = True
+            save_button.set_text("检查并保存…")
+            save_button.props("loading")
             save_button.disable()
             save_controls: list[DisableableElement] = [
                 name,
@@ -328,13 +281,14 @@ def grid_dialog(
             finally:
                 busy = False
                 if not save_button.is_deleted:
+                    save_button.set_text("保存 Bot")
+                    save_button.props(remove="loading")
                     save_button.enable()
                     for control, enabled in zip(save_controls, previous_enabled):
                         control.set_enabled(enabled)
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("取消", on_click=dialog.close).props("flat")
-            ui.button("预览网格", on_click=preview).props("outline")
             save_button = ui.button("保存 Bot", on_click=save)
         ui.label("保存只创建配置；点击运行才会按策略提交真实订单。").classes("text-xs text-slate-500")
     return dialog
