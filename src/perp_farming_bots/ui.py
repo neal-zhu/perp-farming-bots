@@ -707,6 +707,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
             def alerts_view():
                 nonlocal alert_feed
                 ui.label("通知与告警").classes("text-xl font-bold")
+                ui.label(
+                    "这里保留历史事件，不代表当前仍在失败。账户最新状态可在“账户实例”刷新查看。"
+                ).classes("text-xs text-slate-500")
                 alert_feed = AlertFeed(store)
                 alert_feed.update()
                 with ui.expansion("Telegram 通知设置", icon="send").classes("w-full bg-white rounded-xl"):

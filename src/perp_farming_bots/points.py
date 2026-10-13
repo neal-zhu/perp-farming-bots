@@ -216,8 +216,10 @@ class Points:
     async def request(self, provider: Provider, path: str, account_index: int, token: str) -> dict[str, Any]:
         if provider != Provider.LIGHTER_RH or path != "/api/v1/livePoints/total":
             raise ValueError("该平台的账户实时积分尚未接入")
-        response = await self.markets.http.get(
-            HOSTS[provider] + path,
+        response = await self.markets.request_response(
+            provider,
+            "GET",
+            path,
             params={"account_index": account_index},
             headers={"authorization": token},
         )

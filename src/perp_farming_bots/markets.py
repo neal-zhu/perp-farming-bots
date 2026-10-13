@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import ssl
 import time
 from decimal import Decimal
@@ -19,6 +20,10 @@ HOSTS = {
     Provider.LIGHTER: "https://mainnet.zklighter.elliot.ai",
     Provider.LIGHTER_RH: "https://api.rh.lighter.xyz",
 }
+READ_TOTAL_TIMEOUT_SECONDS = 20
+READ_RETRY_DELAY_SECONDS = 0.5
+READ_RETRY_STATUSES = {502, 503, 504}
+logger = logging.getLogger(__name__)
 
 
 class VenueRequestError(ValueError):
@@ -46,20 +51,89 @@ class Markets:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def request(self, provider: Provider, method: str, path: str, **kwargs) -> Any:
+    def log_failure(
+        self, provider: Provider, method: str, path: str, attempts: int, started: float, exc: Exception
+    ) -> None:
+        # Log endpoint names and exception classes, never native identifiers,
+        # query parameters, auth headers, signed bodies or raw native errors.
+        endpoint = "/".join(path.split("?", 1)[0].split("/")[: 3 if provider == Provider.ARCUS else 4])
+        causes = []
+        cause: BaseException | None = exc
+        while cause is not None:
+            causes.append(type(cause).__name__)
+            cause = cause.__cause__
+        logger.warning(
+            "venue_request_failed provider=%s method=%s endpoint=%s attempts=%d elapsed_ms=%d status=%s causes=%s",
+            provider.value,
+            method,
+            endpoint,
+            attempts,
+            (time.monotonic() - started) * 1000,
+            exc.status_code if isinstance(exc, VenueRequestError) else None,
+            "/".join(causes),
+        )
+
+    async def request_response(self, provider: Provider, method: str, path: str, **kwargs) -> httpx.Response:
         if provider not in HOSTS:
             raise ValueError("该交易所接入尚未完成")
+        method = method.upper()
+        read = method == "GET"
+        attempts = 0
+        started = time.monotonic()
+        first_failure = ""
         try:
-            response = await self.http.request(method, HOSTS[provider] + path, **kwargs)
+            # Only reads may repeat. Writes preserve their original single-send
+            # behavior; the execution journal handles uncertain acknowledgements.
+            async with asyncio.timeout(READ_TOTAL_TIMEOUT_SECONDS if read else None):
+                for attempt in range(2 if read else 1):
+                    attempts += 1
+                    try:
+                        response = await self.http.request(method, HOSTS[provider] + path, **kwargs)
+                    except httpx.TransportError as exc:
+                        if read and attempt == 0:
+                            first_failure = type(exc).__name__
+                            await asyncio.sleep(READ_RETRY_DELAY_SECONDS)
+                            continue
+                        raise
+                    if response.status_code >= 400:
+                        if read and attempt == 0 and response.status_code in READ_RETRY_STATUSES:
+                            first_failure = f"HTTP{response.status_code}"
+                            await response.aclose()
+                            await asyncio.sleep(READ_RETRY_DELAY_SECONDS)
+                            continue
+                        raise VenueRequestError(
+                            f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）",
+                            response.status_code,
+                        )
+                    if attempts > 1:
+                        endpoint = "/".join(
+                            path.split("?", 1)[0].split("/")[: 3 if provider == Provider.ARCUS else 4]
+                        )
+                        logger.info(
+                            "venue_read_recovered provider=%s endpoint=%s attempts=%d first_failure=%s",
+                            provider.value,
+                            endpoint,
+                            attempts,
+                            first_failure,
+                        )
+                    return response
         except httpx.HTTPError as exc:
+            self.log_failure(provider, method, path, attempts, started, exc)
             raise VenueRequestError(
                 f"{PROVIDER_NAMES[provider]} 网络连接失败（{type(exc).__name__}）"
             ) from exc
-        if response.status_code >= 400:
-            # Do not expose raw responses which may echo signed requests or credentials.
+        except TimeoutError as exc:
+            self.log_failure(provider, method, path, attempts, started, exc)
             raise VenueRequestError(
-                f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）", response.status_code
-            )
+                f"{PROVIDER_NAMES[provider]} 网络读取超时（总时限 {READ_TOTAL_TIMEOUT_SECONDS:g} 秒）"
+            ) from exc
+        except VenueRequestError as exc:
+            self.log_failure(provider, method, path, attempts, started, exc)
+            raise
+        raise RuntimeError("网络读取未产生明确结果")
+
+    async def request(self, provider: Provider, method: str, path: str, **kwargs) -> Any:
+        response = await self.request_response(provider, method, path, **kwargs)
         result = response.json()
         if provider != Provider.ARCUS and result.get("code") != 200:
             raise ValueError(f"{PROVIDER_NAMES[provider]} 返回非成功状态")
