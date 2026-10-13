@@ -6,7 +6,7 @@ from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
-from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, StrictModel
+from .models import Bot, BotCreate, BotState, BotUpdate, GridMarginCapital, GridParameters, StrictModel
 from .store import operations
 
 if TYPE_CHECKING:
@@ -22,7 +22,9 @@ class GridPreview(StrictModel):
     cursor: int
     current_price: Decimal
     inside_range: bool
-    minimum_budget: Decimal
+    minimum_collateral: Decimal
+    notional_limit: Decimal
+    collateral_budget: Decimal
     minimum_quantity_per_grid: Decimal
     account_available: Decimal
     account_checked_at: float
@@ -57,6 +59,9 @@ class Grid:
         r = self.runtime
         owner = value.id if isinstance(value, Bot) else bot_id
         r.store.check_strategy_accounts(p, bot_id=owner)
+        if isinstance(p.capital, GridMarginCapital):
+            margin = await r.margin.read(p.connection_id, p.symbol)
+            r.margin.validate(p, margin)
         connection = r.store.connection(p.connection_id)
         spec = await r.markets.spec(connection.provider, p.symbol)
         book = await r.markets.book(connection.provider, p.symbol, refresh=True)
@@ -71,24 +76,25 @@ class Grid:
         minimum_quantity = (
             max(spec.quantity_step, spec.min_quantity, spec.min_notional / levels[0]) / spec.quantity_step
         ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
-        minimum_budget = minimum_quantity * levels[-1] * max_units
+        leverage = p.capital.leverage if isinstance(p.capital, GridMarginCapital) else 1
+        minimum_budget = minimum_quantity * levels[-1] * max_units / leverage
         minimum_budget_cents = minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
-        quantity = quantity_floor(p.budget_usd / levels[-1] / max_units, spec.quantity_step)
+        quantity = quantity_floor(p.notional_limit / levels[-1] / max_units, spec.quantity_step)
         if quantity <= 0 or quantity < spec.min_quantity or quantity * levels[0] < spec.min_notional:
             raise ValueError(
                 f"每格数量 {quantity} {p.symbol} 低于最小订单要求。"
-                f"按此区间和 {p.grid_count} 格，预算至少 ${minimum_budget_cents:,.2f}，"
+                f"按此区间和 {p.grid_count} 格，{'保证金额度' if isinstance(p.capital, GridMarginCapital) else '预算'}至少 ${minimum_budget_cents:,.2f}，"
                 f"每格至少 {minimum_quantity} {p.symbol}。请先核对币种和价格区间，再调整格数或预算。"
             )
         await r._check_inventory(p.connection_id, p.symbol)
         account = r.accounts.snapshots[p.connection_id]
-        if account.available < p.budget_usd:
+        if account.available < p.collateral_budget:
             raise ValueError(
-                f"账户可用余额 ${account.available:,.2f}，低于网格预算 ${p.budget_usd:,.2f}。"
+                f"账户可用余额 ${account.available:,.2f}，低于网格资金预算 ${p.collateral_budget:,.2f}。"
                 f"当前格数和区间最低预算 ${minimum_budget_cents:,.2f}；请调整预算或格数。"
             )
         if not book.fresh():
-            raise ValueError("资金检查期间行情已过期，请重新预览")
+            raise ValueError("资金检查期间行情已过期，请重试")
         midpoint = (book.asks[0].price + book.bids[0].price) / 2
         cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
         return GridPreview(
@@ -100,7 +106,9 @@ class Grid:
             cursor=cursor,
             current_price=midpoint,
             inside_range=levels[0] <= midpoint <= levels[-1],
-            minimum_budget=minimum_budget,
+            minimum_collateral=minimum_budget,
+            notional_limit=p.notional_limit,
+            collateral_budget=p.collateral_budget,
             minimum_quantity_per_grid=minimum_quantity,
             account_available=account.available,
             account_checked_at=account.received_at,
@@ -116,6 +124,7 @@ class Grid:
                 if r.store.positions(bot.id):
                     raise ValueError("仍有分配仓位，不能重新初始化网格，请先核实平仓结果")
                 await self.preview(bot)
+                await r.margin.configure(bot)
                 r.store.restart_closed_bot(bot.id)
                 return
             if bot.state not in {BotState.READY, BotState.PAUSED}:
@@ -128,9 +137,12 @@ class Grid:
                     p, state["cursor"], Decimal(state["quantity_per_grid"])
                 ):
                     raise ValueError("网格成交数量未达到原目标；请平仓后新建 Bot，不会补单")
+                if isinstance(p.capital, GridMarginCapital):
+                    await r.margin.verify(p)
                 r.store.set_state(bot.id, BotState.HOLDING, "网格已恢复，继续等待原相邻格线")
             else:
                 await self.preview(bot)
+                await r.margin.configure(bot)
                 r.store.set_state(bot.id, BotState.WAITING, "等待区间内价格，随后建立初始网格仓位")
         elif action == "pause":
             if bot.state not in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION}:
@@ -159,6 +171,8 @@ class Grid:
                 r.store.check_grid_reservation(bot)
                 # A grid exclusively owns this account/symbol. External inventory/orders block it.
                 await r._check_inventory(p.connection_id, p.symbol)
+                if isinstance(p.capital, GridMarginCapital):
+                    await r.margin.verify(p)
                 state = r.store.grid_state(bot.id)
                 trigger: Decimal | None = None
                 if state is None:
@@ -206,10 +220,9 @@ class Grid:
                 if current and target and (current > 0) != (target > 0):
                     raise ValueError("网格必须先确认零仓位，再切换方向")
                 reduce = bool(current) and abs(target) < abs(current)
-                if (
-                    not reduce
-                    and r.accounts.snapshots[p.connection_id].available < abs(delta) * p.upper_price
-                ):
+                if not reduce and r.accounts.snapshots[p.connection_id].available < abs(
+                    delta
+                ) * p.upper_price / (p.capital.leverage if isinstance(p.capital, GridMarginCapital) else 1):
                     raise ValueError("可用抵押资产不足以覆盖本格订单")
                 op_id = r.store.begin_grid_action(bot.id, cursor, target, layout=layout)
                 if delta:

@@ -28,7 +28,7 @@ def grid_bot(store, account, direction="neutral", **changes):
         lower_price="58000",
         upper_price="62000",
         grid_count=4,
-        budget_usd="2480",
+        capital={"kind": "notional", "notional_usd": "2480"},
     )
     params.update(changes)
     return store.add_bot(
@@ -85,7 +85,7 @@ async def test_directional_grid_accumulates_and_reduces_confirmed_inventory(
     bot = grid_bot(store, account, direction)
     preview = await runtime.preview(bot)
     assert isinstance(preview, GridPreview)
-    assert preview.initial_quantity == initial and preview.max_notional <= bot.parameters.budget_usd
+    assert preview.initial_quantity == initial and preview.max_notional <= bot.parameters.notional_limit
     await runtime.command(bot.id, "run")
     assert adapter.sent == []  # User command enables strategy; sends occur in its tick.
     assert await runtime.grid.tick(bot.id)
@@ -216,7 +216,7 @@ async def test_grid_owns_account_symbol_and_cannot_mix_with_another_bot(env):
                     lower_price=58000,
                     upper_price=62000,
                     grid_count=4,
-                    budget_usd=1000,
+                    capital={"kind": "notional", "notional_usd": 1000},
                 ),
             )
         )
@@ -287,14 +287,20 @@ async def test_grid_schema_four_migration_preserves_existing_hedge(env):
         assert migrated.bot(bot.id).model_dump() == before
         assert migrated.grid_state(bot.id) is None
         with migrated.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 5
+            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 6
             assert list(db.execute(select(grid_states))) == []
     finally:
         migrated.close()
 
 
 @pytest.mark.parametrize(
-    "changes", [{"grid_count": 3}, {"lower_price": 62000}, {"grid_count": 4.5}, {"budget_usd": "NaN"}]
+    "changes",
+    [
+        {"grid_count": 3},
+        {"lower_price": 62000},
+        {"grid_count": 4.5},
+        {"capital": {"kind": "notional", "notional_usd": "NaN"}},
+    ],
 )
 async def test_invalid_grid_parameters_are_rejected_explicitly(env, changes):
     store, _, account, _ = env
@@ -396,6 +402,8 @@ async def test_actual_grid_create_form_validates_inline_and_saves_without_orders
             e.set_value(58000)
         elif isinstance(e, ui.number) and e.label == "价格上限（USD）":
             e.set_value(62000)
+        elif isinstance(e, ui.number) and e.label == "投入保证金额度（USD）":
+            e.set_value(1000)
     name.set_value("")
     await asyncio.gather(*click(page, "保存 Bot"))
     assert name.error == "请输入 Bot 名称" and store.bots() == []

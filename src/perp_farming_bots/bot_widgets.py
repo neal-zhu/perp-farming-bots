@@ -5,7 +5,7 @@ from typing import Any
 
 from nicegui import ui
 
-from .formatting import money, pnl_money, rate, stamp
+from .formatting import grid_capital_text, money, pnl_money, rate, stamp
 from .models import (
     GRID_DIRECTION_NAMES,
     PROVIDER_NAMES,
@@ -356,7 +356,7 @@ class GridBotCard(BotCard):
             f"累计已确认成交额 {money(volume['confirmed_usd'])} · 包含初始建仓、每格成交和平仓"
         )
         self.parameters.set_text(
-            f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · 名义仓位预算 {money(p.budget_usd)} · 滑点上限 {rate(p.slippage_bps / 100)}"
+            f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · {grid_capital_text(p)} · 滑点上限 {rate(p.slippage_bps / 100)}"
         )
         self.realized.set_text(f"已实现价格盈亏 {pnl_money(pnl['realized'])}")
         self.reason.set_text(f"状态说明：{bot.reason}")

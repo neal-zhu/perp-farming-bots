@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 from nicegui import ui
 
-from .formatting import money, rate, stamp
+from .formatting import grid_capital_text, money, rate, stamp
 from .grid import target_quantity
-from .models import Book, Bot, BotState, GridParameters, HedgeParameters, Preview
+from .models import Book, Bot, BotState, GridParameters, HedgeParameters, MarginSnapshot, Preview
 from .store import Store, fills
 
 if TYPE_CHECKING:
@@ -23,6 +23,8 @@ class GridMarket:
     book: Book | None
     error: str | None
     last_tick: float | None
+    margin: MarginSnapshot | None
+    margin_error: str | None
 
 
 @dataclass(frozen=True)
@@ -35,15 +37,21 @@ class HedgeMarket:
 async def observe_strategy(runtime: Runtime, bot: Bot) -> GridMarket | HedgeMarket:
     """Use native public reads and existing sizing logic; never enable execution."""
     if isinstance(bot.parameters, GridParameters):
+        book, error = None, None
         try:
             book = await runtime.markets.book(
                 runtime.store.connection(bot.parameters.connection_id).provider, bot.parameters.symbol
             )
             if not book.fresh():
                 raise ValueError("行情已过期")
-            return GridMarket(book, None, runtime.last_tick)
         except ValueError as exc:
-            return GridMarket(None, str(exc), runtime.last_tick)
+            book, error = None, str(exc)
+        margin, margin_error = None, None
+        try:
+            margin = await runtime.margin.read(bot.parameters.connection_id, bot.parameters.symbol)
+        except ValueError as exc:
+            margin_error = str(exc)
+        return GridMarket(book, error, runtime.last_tick, margin, margin_error)
     try:
         preview = await runtime.preview(bot)
         assert isinstance(preview, Preview)
@@ -124,6 +132,7 @@ class GridMonitor(StrategyMonitor):
         self.rows: dict[int, GridLine] = {}
         with self.root:
             self.inventory = ui.label().classes("pfb-grid-inventory")
+            self.native_margin = ui.label().classes("pfb-monitor-caption")
             self.empty = ui.label("运行后显示实际格线和每格数量").classes("pfb-monitor-empty")
             self.wall = ui.element("div").classes("pfb-grid-wall")
             with self.wall:
@@ -158,9 +167,22 @@ class GridMonitor(StrategyMonitor):
             f"{'多仓' if pos.role == 'long' else '空仓'} {pos.quantity} {p.symbol}" for pos in positions
         ) or ("尚未确认" if pending else "空仓")
         self.inventory.set_text(
-            f"已确认仓位：{inventory} · 已确认成交 {len(history)} 笔 · 名义仓位预算 {money(p.budget_usd)}"
+            f"已确认仓位：{inventory} · 已确认成交 {len(history)} 笔 · {grid_capital_text(p)}"
             + (" · 未确认订单尚未计入" if pending else "")
         )
+        margin = market.margin
+        if margin is not None and 0 <= time.time() - margin.received_at <= 15:
+            native = (
+                f"{margin.leverage.normalize():f} 倍 / {'全仓' if margin.margin_mode == 'cross' else '逐仓'}"
+                if margin.leverage is not None
+                else "当前设置未返回"
+            )
+            self.native_margin.set_text(
+                f"交易所当前：{native} · 最高 {margin.max_leverage.normalize():f} 倍"
+                + (f" · 逐仓余额 {money(margin.position_margin)}" if margin.margin_mode == "isolated" else "")
+            )
+        else:
+            self.native_margin.set_text(f"交易所保证金设置暂不可用：{market.margin_error or '数据已过期'}")
         book = market.book if market.book is not None and market.book.fresh() else None
         mid = (book.bids[0].price + book.asks[0].price) / 2 if book else None
         self.values[0].set_text(money(mid) if mid is not None else "暂不可用")

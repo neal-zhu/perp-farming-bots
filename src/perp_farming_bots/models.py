@@ -128,6 +128,18 @@ class HedgeParameters(StrictModel):
 GRID_DIRECTION_NAMES = {"long": "做多", "short": "做空", "neutral": "中性"}
 
 
+class GridNotionalCapital(StrictModel):
+    kind: Literal["notional"]
+    notional_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
+
+
+class GridMarginCapital(StrictModel):
+    kind: Literal["margin"]
+    investment_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
+    leverage: int = Field(ge=1, le=1000, strict=True)
+    margin_mode: Literal["cross", "isolated"]
+
+
 class GridParameters(StrictModel):
     connection_id: str
     symbol: str = Field(pattern=r"^[A-Z0-9]+$")
@@ -135,7 +147,7 @@ class GridParameters(StrictModel):
     lower_price: Decimal = Field(gt=0, allow_inf_nan=False)
     upper_price: Decimal = Field(gt=0, allow_inf_nan=False)
     grid_count: int = Field(ge=2, le=100, strict=True)
-    budget_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
+    capital: GridNotionalCapital | GridMarginCapital = Field(discriminator="kind")
     slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
 
     @field_validator("symbol", mode="before")
@@ -151,11 +163,41 @@ class GridParameters(StrictModel):
             raise ValueError("价格下限必须低于上限")
         if self.direction == "neutral" and self.grid_count % 2:
             raise ValueError("中性网格需要偶数格，区间中点为零仓位")
+        if self.notional_limit > Decimal("1000000"):
+            raise ValueError("保证金乘以杠杆后的最大名义仓位不得超过 1,000,000 USD")
         return self
+
+    @property
+    def notional_limit(self) -> Decimal:
+        if isinstance(self.capital, GridNotionalCapital):
+            return self.capital.notional_usd
+        return self.capital.investment_usd * self.capital.leverage
+
+    @property
+    def collateral_budget(self) -> Decimal:
+        if isinstance(self.capital, GridNotionalCapital):
+            return self.capital.notional_usd
+        return self.capital.investment_usd
 
     @property
     def connection_ids(self) -> list[str]:
         return [self.connection_id]
+
+
+class MarginSnapshot(StrictModel):
+    symbol: str
+    leverage: Decimal | None = Field(gt=0, allow_inf_nan=False)
+    margin_mode: Literal["cross", "isolated"] | None
+    max_leverage: Decimal = Field(ge=1, allow_inf_nan=False)
+    position_margin: Decimal | None = Field(ge=0, allow_inf_nan=False)
+    received_at: float
+    source: str
+
+    @model_validator(mode="after")
+    def consistent_settings(self) -> MarginSnapshot:
+        if (self.leverage is None) != (self.margin_mode is None):
+            raise ValueError("杠杆和保证金模式必须一起确认，或一起保持未知")
+        return self
 
 
 class BotUpdate(StrictModel):

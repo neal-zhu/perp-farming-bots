@@ -13,6 +13,7 @@ from perp_farming_bots.models import (
     ConnectionCreate,
     FundingSnapshot,
     Level,
+    MarginSnapshot,
     MarketSpec,
     NativePosition,
     OrderIntent,
@@ -77,6 +78,29 @@ class FixtureAdapter(Adapter):
         self.unknown = False
         self.raise_after_send = False
         self.external_orders = []
+        self.margin_leverage = Decimal(2)
+        self.margin_mode = "cross"
+        self.margin_sent = []
+
+    async def margin(self, symbol):
+        return MarginSnapshot(
+            symbol=symbol,
+            leverage=self.margin_leverage,
+            margin_mode=self.margin_mode,
+            max_leverage=Decimal(50),
+            position_margin=None,
+            received_at=time.time(),
+            source="test fixture",
+        )
+
+    async def prepare_margin(self, symbol, capital):
+        return {"symbol": symbol, "leverage": capital.leverage, "margin_mode": capital.margin_mode}
+
+    async def send_margin(self, prepared):
+        self.margin_sent.append(prepared)
+        self.margin_leverage = Decimal(prepared["leverage"])
+        self.margin_mode = prepared["margin_mode"]
+        return "test-margin-ack"
 
     async def validate(self):
         return await self.snapshot()

@@ -183,6 +183,20 @@ grid_actions = Table(
     Column("cursor_after", Integer, nullable=False),
     Column("target_quantity", String, nullable=False),
 )
+margin_changes = Table(
+    "margin_changes",
+    metadata,
+    Column("operation_id", String, primary_key=True),
+    Column("bot_id", String, nullable=False),
+    Column("connection_id", String, nullable=False),
+    Column("symbol", String, nullable=False),
+    Column("target", Text, nullable=False),
+    Column("payload", Text, nullable=False),
+    Column("status", String, nullable=False),
+    Column("result", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
 
 
 class Store:
@@ -193,7 +207,7 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 2, 3, 4, 5}:
+            if version not in {0, 2, 3, 4, 5, 6}:
                 raise ValueError(f"Unsupported database schema version {version}")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
@@ -254,7 +268,25 @@ class Store:
                             updated_at=time.time(),
                         )
                     )
-            db.exec_driver_sql("PRAGMA user_version=5")
+            if version < 6:
+                for row in db.execute(select(bots).where(bots.c.strategy == "grid")).mappings():
+                    parameters = json.loads(row["parameters"])
+                    if "budget_usd" in parameters:
+                        if "capital" in parameters:
+                            raise ValueError("网格同时存在旧预算和新资金配置，不能判断真实含义")
+                        parameters["capital"] = {
+                            "kind": "notional",
+                            "notional_usd": parameters.pop("budget_usd"),
+                        }
+                        GridParameters.model_validate(parameters)
+                        db.execute(
+                            update(bots)
+                            .where(bots.c.id == row["id"])
+                            .values(parameters=json.dumps(parameters))
+                        )
+                    else:
+                        GridParameters.model_validate(parameters)
+            db.exec_driver_sql("PRAGMA user_version=6")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -433,6 +465,14 @@ class Store:
         bot = self.bot(bot_id)
         pending = self.bot_pending(bot_id)
         return {
+            "capital": not pending
+            and not self.positions(bot_id)
+            and (
+                bot.state == BotState.CLOSED
+                or not self.bot_orders(bot_id)
+                and self.grid_state(bot_id) is None
+                and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED}
+            ),
             "entry_parameters": not pending
             and not self.positions(bot_id)
             and not self.bot_orders(bot_id)
@@ -458,7 +498,14 @@ class Store:
         if value.parameters.model_dump(include=entry_fields) != bot.parameters.model_dump(
             include=entry_fields
         ):
-            if not editable["entry_parameters"]:
+            capital_only = (
+                isinstance(value.parameters, GridParameters)
+                and isinstance(bot.parameters, GridParameters)
+                and value.parameters.model_dump(exclude={"capital", "slippage_bps"})
+                == bot.parameters.model_dump(exclude={"capital", "slippage_bps"})
+                and editable["capital"]
+            )
+            if not editable["entry_parameters"] and not capital_only:
                 raise ValueError("已有订单或持仓，不能修改账户、币种、建仓金额或价差条件；请新建 Bot")
         if value.parameters.slippage_bps != bot.parameters.slippage_bps and not editable["slippage"]:
             raise ValueError("有未确认订单或需要处理的状态，不能修改滑点；请先同步并处理")
@@ -484,6 +531,13 @@ class Store:
             if editable["entry_parameters"]:
                 values.update(state=BotState.READY.value, reason="参数已修改，请重新点击运行")
         with self.transaction() as db:
+            if (
+                isinstance(value.parameters, GridParameters)
+                and isinstance(bot.parameters, GridParameters)
+                and value.parameters.capital != bot.parameters.capital
+                and bot.state == BotState.CLOSED
+            ):
+                db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
             db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
             if interval_changed:
                 assert isinstance(value.parameters, HedgeParameters)
@@ -543,6 +597,65 @@ class Store:
                 )
                 reason = "重新运行，等待原价差条件开始下一轮；历史成交保留"
             self.set_state(bot_id, BotState.WAITING, reason, db)
+
+    def begin_margin_change(
+        self, bot_id: str, connection_id: str, symbol: str, target: str, payload: str
+    ) -> str:
+        if self.bot_pending(bot_id) or self.positions(bot_id):
+            raise ValueError("有未确认操作或分配仓位，不能修改保证金设置")
+        op_id, now = uuid.uuid4().hex, time.time()
+        with self.transaction() as db:
+            db.execute(
+                insert(operations).values(
+                    id=op_id,
+                    bot_id=bot_id,
+                    kind="margin_config",
+                    status="pending",
+                    message="正在确认杠杆与保证金模式",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.execute(
+                insert(margin_changes).values(
+                    operation_id=op_id,
+                    bot_id=bot_id,
+                    connection_id=connection_id,
+                    symbol=symbol,
+                    target=target,
+                    payload=payload,
+                    status="pending",
+                    result=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return op_id
+
+    def finish_margin_change(self, op_id: str, status: str, message: str, result: str | None = None) -> None:
+        if status not in {"confirmed", "unknown", "rejected"}:
+            raise ValueError("保证金设置操作状态无效")
+        with self.transaction() as db:
+            db.execute(
+                update(margin_changes)
+                .where(margin_changes.c.operation_id == op_id)
+                .values(status=status, result=result, updated_at=time.time())
+            )
+            self.finish_operation(
+                op_id,
+                "completed" if status == "confirmed" else "unknown" if status == "unknown" else "attention",
+                message,
+                db,
+            )
+
+    def bot_margin_changes(self, bot_id: str, *, public: bool = True) -> list[dict[str, Any]]:
+        rows = self.rows(margin_changes, bot_id)
+        for row in rows:
+            if public:
+                row.pop("payload")
+            row["target"] = json.loads(row["target"])
+            row["result"] = json.loads(row["result"]) if row["result"] is not None else None
+        return rows
 
     def begin_grid_action(
         self, bot_id: str, cursor: int, target: Decimal, *, layout: dict[str, Any] | None = None

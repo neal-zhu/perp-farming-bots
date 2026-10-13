@@ -9,8 +9,18 @@ from typing import Any
 import lighter
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .markets import HOSTS, Markets
-from .models import AccountSnapshot, ConnectionCreate, NativePosition, OrderIntent, OrderResult, Provider
+from .markets import HOSTS, Markets, VenueRequestError
+from .models import (
+    AccountSnapshot,
+    ConnectionCreate,
+    GridMarginCapital,
+    MarginSnapshot,
+    NativePosition,
+    OrderIntent,
+    OrderResult,
+    Provider,
+)
+from .native_margin import read_native_margin
 from .security import Secrets
 from .store import Store
 
@@ -47,6 +57,18 @@ class Adapter:
         raise NotImplementedError
 
     async def open_orders(self, symbol: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def margin(self, symbol: str) -> MarginSnapshot:
+        try:
+            return await read_native_margin(self.value, self.markets, symbol)
+        except (KeyError, TypeError, InvalidOperation) as exc:
+            raise ValueError("原生保证金数据缺失或格式无效") from exc
+
+    async def prepare_margin(self, symbol: str, capital: GridMarginCapital) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def send_margin(self, prepared: dict[str, Any]) -> str | None:
         raise NotImplementedError
 
     def unknown(self, native_id: str | None = None) -> OrderResult:
@@ -151,6 +173,40 @@ class Arcus(Adapter):
                 "reduceOnly": intent.reduce_only,
             },
         }
+
+    async def prepare_margin(self, symbol: str, capital: GridMarginCapital) -> dict[str, Any]:
+        spec = await self.markets.spec(Provider.ARCUS, symbol)
+        timestamp = str(time.time_ns())
+        body = {
+            **self.params(),
+            "marketId": spec.market_id,
+            "leverage": capital.leverage,
+            "isolated": capital.margin_mode == "isolated",
+        }
+        message = (
+            timestamp + "setLeverage" + json.dumps(body, sort_keys=True, separators=(",", ":"))
+        ).encode()
+        return {
+            "headers": {
+                "X-API-Key": self.public_key,
+                "X-Timestamp": timestamp,
+                "X-Signature": self.key.sign(message).hex(),
+            },
+            "body": body,
+        }
+
+    async def send_margin(self, prepared: dict[str, Any]) -> str | None:
+        r = await self.markets.request(
+            Provider.ARCUS,
+            "POST",
+            "/v1/setLeverage",
+            params={"address": self.value.address},
+            json=prepared["body"],
+            headers=prepared["headers"],
+        )
+        if r.get("status") == "REJECTED":
+            raise VenueRequestError("交易所拒绝杠杆/保证金模式设置", 422)
+        return r.get("requestId")
 
     async def send(self, prepared: dict[str, Any]) -> str | None:
         r = await self.markets.request(
@@ -306,6 +362,45 @@ class Lighter(Adapter):
                 return {"tx_type": tx_type, "tx_info": tx_info, "tx_hash": tx_hash, "nonce": nonce["nonce"]}
             finally:
                 await signer.close()
+
+    async def prepare_margin(self, symbol: str, capital: GridMarginCapital) -> dict[str, Any]:
+        if 10000 % capital.leverage:
+            raise ValueError(
+                "此杠杆无法按 Lighter 原生保证金精度精确表示，请选择 1、2、4、5、8、10、20、25 等倍数"
+            )
+        spec = await self.markets.spec(self.value.provider, symbol)
+        nonce = await self.markets.request(
+            self.value.provider,
+            "GET",
+            "/api/v1/nextNonce",
+            params={"account_index": self.value.account_index, "api_key_index": self.key_index},
+        )
+        async with SIGNER_LOCK:
+            signer = lighter.SignerClient(
+                url=HOSTS[self.value.provider],
+                chain_id=CHAIN_IDS[self.value.provider],
+                account_index=self.value.account_index,
+                api_private_keys={self.key_index: self.value.api_private_key.get_secret_value()},
+            )
+            try:
+                tx_type, tx_info, tx_hash, error = signer.sign_update_leverage(
+                    market_index=spec.market_id,
+                    fraction=10000 // capital.leverage,
+                    margin_mode=signer.CROSS_MARGIN_MODE
+                    if capital.margin_mode == "cross"
+                    else signer.ISOLATED_MARGIN_MODE,
+                    nonce=nonce["nonce"],
+                    api_key_index=self.key_index,
+                )
+                if error is not None or tx_info is None or tx_hash is None:
+                    raise ValueError("Lighter 原生保证金设置签名失败")
+                return {"tx_type": tx_type, "tx_info": tx_info, "tx_hash": tx_hash, "nonce": nonce["nonce"]}
+            finally:
+                await signer.close()
+
+    async def send_margin(self, prepared: dict[str, Any]) -> str | None:
+        await self.send(prepared)
+        return prepared["tx_hash"]
 
     async def send(self, prepared: dict[str, Any]) -> str | None:
         await self.markets.request(

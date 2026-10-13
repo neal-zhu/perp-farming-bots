@@ -100,6 +100,10 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
         connection = store.connection(connection_id)
         return {"symbols": await runtime.markets.catalog(connection.provider)}
 
+    @app.get("/api/connections/{connection_id}/margin/{symbol}")
+    async def account_margin(connection_id: str, symbol: str):
+        return (await runtime.margin.read(connection_id, symbol)).model_dump(mode="json")
+
     @app.post("/api/bots/preview")
     async def preview(value: BotCreate):
         return (await runtime.preview(value)).model_dump(mode="json")
@@ -136,6 +140,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
             "fills": store.rows(fills, bot_id),
             "orders": store.bot_orders(bot_id),
             "operations": store.rows(operations, bot_id),
+            "margin_changes": store.bot_margin_changes(bot_id),
             "editability": store.bot_editability(bot_id),
             "cycle": store.cycle(bot_id),
             "grid": store.grid_state(bot_id),

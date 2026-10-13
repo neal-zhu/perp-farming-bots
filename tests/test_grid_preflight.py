@@ -13,7 +13,7 @@ from test_grid import grid_bot
 
 from perp_farming_bots.api import register_routes
 from perp_farming_bots.grid_ui import grid_dialog
-from perp_farming_bots.models import BotCreate, BotUpdate, GridParameters
+from perp_farming_bots.models import BotCreate, BotUpdate, GridNotionalCapital, GridParameters
 from perp_farming_bots.notifications import Notifications
 
 
@@ -30,7 +30,7 @@ async def test_grid_api_rejects_below_minimum_budget_before_saving(env):
             lower_price=58000,
             upper_price=62000,
             grid_count=4,
-            budget_usd=10,
+            capital={"kind": "notional", "notional_usd": 10},
         ),
     )
     app = FastAPI()
@@ -65,7 +65,7 @@ async def test_grid_api_rejects_insufficient_or_unknown_balance_before_save(env,
             lower_price=58000,
             upper_price=62000,
             grid_count=4,
-            budget_usd=500,
+            capital={"kind": "notional", "notional_usd": 500},
         ),
     )
     app = FastAPI()
@@ -87,18 +87,24 @@ async def test_grid_edit_preflight_excludes_own_reservation_and_blocks_invalid_b
     app = FastAPI()
     register_routes(app, store, runtime, Notifications(store, runtime.accounts.secrets))
     invalid = BotUpdate(
-        name=bot.name, parameters=bot.parameters.model_copy(update={"budget_usd": Decimal("10")})
+        name=bot.name,
+        parameters=bot.parameters.model_copy(
+            update={"capital": GridNotionalCapital(kind="notional", notional_usd=Decimal("10"))}
+        ),
     )
     with TestClient(app) as client:
         failed = client.put(f"/api/bots/{bot.id}", json=invalid.model_dump(mode="json"))
         assert failed.status_code == 400 and "$124.00" in failed.text
         assert store.bot(bot.id).parameters == bot.parameters
         valid = BotUpdate(
-            name=bot.name, parameters=bot.parameters.model_copy(update={"budget_usd": Decimal("124")})
+            name=bot.name,
+            parameters=bot.parameters.model_copy(
+                update={"capital": GridNotionalCapital(kind="notional", notional_usd=Decimal("124"))}
+            ),
         )
         result = client.post(f"/api/bots/{bot.id}/preview", json=valid.model_dump(mode="json"))
         assert result.status_code == 200
-        assert result.json()["minimum_budget"] == "124.000"
+        assert result.json()["minimum_collateral"] == "124.000"
         assert result.json()["quantity_per_grid"] == "0.001"
         assert result.json()["account_available"] == "10000"
         assert client.put(f"/api/bots/{bot.id}", json=valid.model_dump(mode="json")).status_code == 200
@@ -193,12 +199,12 @@ async def test_form_save_performs_native_minimum_check_and_preserves_draft(page,
                 e.set_value(58000)
             elif e.label == "价格上限（USD）":
                 e.set_value(62000)
-            elif e.label == "名义仓位预算（USD）":
+            elif e.label == "投入保证金额度（USD）":
                 e.set_value(10)
     await asyncio.gather(*click(page, "保存 Bot"))
     assert store.bots() == [] and runtime.accounts.adapter(account.id).sent == []
-    assert any(isinstance(e, ui.label) and "预算至少" in e.text for e in page.elements.values())
+    assert any(isinstance(e, ui.label) and "至少" in e.text for e in page.elements.values())
     budget = next(
-        e for e in page.elements.values() if isinstance(e, ui.number) and e.label == "名义仓位预算（USD）"
+        e for e in page.elements.values() if isinstance(e, ui.number) and e.label == "投入保证金额度（USD）"
     )
     assert budget.value == 10 and budget.enabled

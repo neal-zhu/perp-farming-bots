@@ -13,12 +13,14 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from .grid import Grid, GridPreview
+from .margin import Margin
 from .markets import Markets, VenueRequestError
 from .models import (
     Bot,
     BotCreate,
     BotState,
     BotUpdate,
+    GridMarginCapital,
     GridParameters,
     HedgeParameters,
     MarketSpec,
@@ -70,6 +72,7 @@ class Runtime:
     def __init__(self, store: Store, markets: Markets, accounts: Accounts):
         self.store, self.markets, self.accounts = store, markets, accounts
         self.points = Points(store, markets, accounts)
+        self.margin = Margin(self)
         self.grid = Grid(self)
         self.guard = asyncio.Lock()
         self.task: asyncio.Task[None] | None = None
@@ -342,6 +345,12 @@ class Runtime:
         grid_bounds: tuple[Decimal, Decimal] | None = None,
     ) -> OrderResult:
         account = self.store.connection(connection_id)
+        if (
+            isinstance(bot.parameters, GridParameters)
+            and isinstance(bot.parameters.capital, GridMarginCapital)
+            and not reduce_only
+        ):
+            await self.margin.verify(bot.parameters)
         spec = await self.markets.spec(account.provider, bot.parameters.symbol)
         if quantity_floor(quantity, spec.quantity_step) != quantity:
             raise ValueError("实际数量不符合该交易所精度，请在交易所处理残余数量")
@@ -361,6 +370,8 @@ class Runtime:
         slippage = bot.parameters.slippage_bps / 10000
         raw = reference_price * (1 + slippage if side == "buy" else 1 - slippage)
         price = bounded_price(raw, spec, side)
+        if grid_bounds is not None:
+            price = min(price, grid_bounds[1]) if side == "buy" else max(price, grid_bounds[0])
         if trigger_price is not None:
             price = min(price, trigger_price) if side == "buy" else max(price, trigger_price)
         if not reduce_only and (quantity < spec.min_quantity or quantity * price < spec.min_notional):
@@ -575,6 +586,8 @@ class Runtime:
     async def sync(self, bot_id: str) -> None:
         async with self.guard:
             if self.store.bot(bot_id).state != BotState.ATTENTION and not self.store.bot_pending(bot_id):
+                return
+            if await self.margin.reconcile(bot_id):
                 return
             for order in self.store.bot_orders(bot_id):
                 if order["status"] not in UNRESOLVED:

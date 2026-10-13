@@ -8,7 +8,16 @@ from nicegui.elements.mixins.disableable_element import DisableableElement
 from nicegui.elements.mixins.validation_element import ValidationElement
 from pydantic import ValidationError
 
-from .models import GRID_DIRECTION_NAMES, PROVIDER_NAMES, BotCreate, BotUpdate, GridParameters
+from .formatting import money
+from .models import (
+    GRID_DIRECTION_NAMES,
+    PROVIDER_NAMES,
+    BotCreate,
+    BotUpdate,
+    GridMarginCapital,
+    GridNotionalCapital,
+    GridParameters,
+)
 from .runtime import Runtime, bounded_price
 from .store import Store
 
@@ -19,7 +28,11 @@ def grid_dialog(
     bot = store.bot(bot_id) if bot_id else None
     p = bot.parameters if bot else None
     assert p is None or isinstance(p, GridParameters)
-    editable = store.bot_editability(bot_id) if bot_id else {"entry_parameters": True, "slippage": True}
+    editable = (
+        store.bot_editability(bot_id)
+        if bot_id
+        else {"entry_parameters": True, "slippage": True, "capital": True}
+    )
     accounts = store.connections()
     dialog = ui.dialog()
     with dialog, ui.card().classes("w-full max-w-2xl p-6 gap-3").style("max-height: 90vh; overflow-y: auto"):
@@ -123,6 +136,18 @@ def grid_dialog(
             .props("flat dense")
             .classes("text-xs")
         )
+        capital_kind = (
+            ui.select(
+                {"margin": "投入保证金 + 杠杆", "notional": "名义仓位额度（旧配置）"}
+                if p and isinstance(p.capital, GridNotionalCapital)
+                else {"margin": "投入保证金 + 杠杆"},
+                label="资金计算方式",
+                value=p.capital.kind if p else "margin",
+            )
+            .props("outlined dense hide-bottom-space")
+            .classes("w-full")
+        )
+        capital_kind.set_visibility(p is not None and isinstance(p.capital, GridNotionalCapital))
         with ui.row().classes("w-full gap-4"):
             count = (
                 ui.number(
@@ -146,8 +171,8 @@ def grid_dialog(
             )
             budget = (
                 ui.number(
-                    "名义仓位预算（USD）",
-                    value=float(p.budget_usd) if p else 1000,
+                    "投入保证金额度（USD）",
+                    value=float(p.collateral_budget) if p else 100,
                     min=0,
                     validation={
                         "预算须大于 0，且不超过 1,000,000": lambda v: v is not None and 0 < v <= 1000000
@@ -157,9 +182,100 @@ def grid_dialog(
                 .props("outlined dense hide-bottom-space")
                 .classes("flex-1 min-w-40")
             )
-        ui.label("预算是区间内最大名义仓位上限，不是保证金；按交易所精度向下取整，每格数量固定。").classes(
-            "text-xs text-slate-500"
-        )
+        with ui.row().classes("w-full gap-4"):
+            leverage = (
+                ui.number(
+                    "杠杆倍数",
+                    value=p.capital.leverage if p and isinstance(p.capital, GridMarginCapital) else 1,
+                    min=1,
+                    max=1000,
+                    step=1,
+                    validation={
+                        "杠杆须为 1–1000 的整数，且不超过交易所上限": lambda v: (
+                            v is not None and 1 <= v <= 1000 and v == int(v)
+                        )
+                    },
+                )
+                .without_auto_validation()
+                .props("outlined dense hide-bottom-space")
+                .classes("flex-1 min-w-40")
+            )
+            margin_mode = (
+                ui.select(
+                    {"isolated": "逐仓 · 该币种独立保证金", "cross": "全仓 · 共享账户资金"},
+                    label="保证金模式",
+                    value=p.capital.margin_mode
+                    if p and isinstance(p.capital, GridMarginCapital)
+                    else "isolated",
+                )
+                .props("outlined dense hide-bottom-space")
+                .classes("flex-1 min-w-40")
+            )
+        capital_help = ui.label().classes("text-sm font-medium text-slate-700")
+        mode_help = ui.label().classes("text-xs text-slate-500")
+        native_info = ui.label("正在读取交易所杠杆上限与当前设置…").classes("text-xs text-slate-500")
+        native_description: str | None = None
+
+        def explain_capital():
+            is_margin = capital_kind.value == "margin"
+            budget.set_label("投入保证金额度（USD）" if is_margin else "名义仓位预算（USD）")
+            leverage.set_visibility(is_margin)
+            margin_mode.set_visibility(is_margin)
+            amount = Decimal(str(budget.value)) if budget.value is not None else None
+            multiple = Decimal(str(leverage.value)) if leverage.value is not None else None
+            capital_help.set_text(
+                f"{money(amount)} 保证金 × {multiple.normalize():f} 倍 ≈ {money(amount * multiple)} 区间内仓位上限"
+                if is_margin and amount is not None and multiple is not None
+                else f"区间内仓位上限 {money(amount)}；保持交易所当前杠杆与模式"
+                if not is_margin
+                else "填写金额和杠杆后自动计算仓位上限"
+            )
+            mode_help.set_text(
+                "逐仓按实际建仓分配保证金；未用额度留在账户，程序不主动追加保证金。"
+                if is_margin and margin_mode.value == "isolated"
+                else "全仓共享账户抵押品，投入额度用于计算此 Bot 仓位，没有为它隔离资金。"
+                if is_margin
+                else "旧配置的金额是仓位额度；平仓后可改成投入保证金 + 杠杆。"
+            )
+            if native_description is not None:
+                native_info.set_text(
+                    native_description
+                    + ("保存不会修改，运行时应用所选设置。" if is_margin else "旧配置沿用当前设置。")
+                )
+
+        for capital_input in [capital_kind, budget, leverage, margin_mode]:
+            capital_input.on_value_change(explain_capital)
+        explain_capital()
+
+        async def inspect_native():
+            nonlocal native_description
+            requested_account, requested_symbol = account.value, symbol.value
+            native_description = None
+            native_info.set_text("正在读取交易所杠杆上限与当前设置…")
+            try:
+                data = await runtime.margin.read(requested_account, requested_symbol)
+                if dialog.is_deleted or (requested_account, requested_symbol) != (
+                    account.value,
+                    symbol.value,
+                ):
+                    return
+                current = (
+                    f"{data.leverage.normalize():f} 倍 / {'全仓' if data.margin_mode == 'cross' else '逐仓'}"
+                    if data.leverage is not None
+                    else "当前设置未返回"
+                )
+                native_description = f"交易所当前：{current} · 最高 {data.max_leverage.normalize():f} 倍。"
+                explain_capital()
+            except ValueError as exc:
+                if not dialog.is_deleted and (requested_account, requested_symbol) == (
+                    account.value,
+                    symbol.value,
+                ):
+                    native_info.set_text(f"交易所设置暂不可用：{exc}；保存时会重新检查。")
+
+        account.on_value_change(inspect_native)
+        symbol.on_value_change(inspect_native)
+        ui.timer(0.1, inspect_native, once=True)
         ui.label("保存时自动检查账户余额和每格最低金额；不符合要求会在这里提示，运行时再次核对。").classes(
             "text-xs text-slate-500"
         )
@@ -184,15 +300,17 @@ def grid_dialog(
                 lower,
                 upper,
                 count,
-                budget,
                 range_button,
             ]
-            for control in entry_controls:
-                control.disable()
+            for entry_control in entry_controls:
+                entry_control.disable()
             ui.label(
-                "已建立网格，账户、方向和格线已锁定。可修改名称与滑点；调整区间请平仓后新建 Bot。"
+                "已建立网格，账户、方向和格线已锁定。可修改名称与滑点；资金配置需先确认平仓，调整区间请新建 Bot。"
             ).classes("text-xs text-amber-800")
         slippage.set_enabled(editable["slippage"])
+        capital_controls: list[DisableableElement] = [capital_kind, budget, leverage, margin_mode]
+        for capital_control in capital_controls:
+            capital_control.set_enabled(editable["capital"])
         with ui.element("div").classes(
             "w-full bg-slate-50 rounded-lg p-4 text-xs text-slate-600 leading-relaxed"
         ):
@@ -214,7 +332,18 @@ def grid_dialog(
                 upper.set_value(None)
 
         symbol.on_value_change(lambda: invalidate(clear_range=True))
-        for input_control in [account, direction, lower, upper, count, budget, slippage]:
+        for input_control in [
+            account,
+            direction,
+            lower,
+            upper,
+            count,
+            capital_kind,
+            budget,
+            leverage,
+            margin_mode,
+            slippage,
+        ]:
             input_control.on_value_change(invalidate)
 
         def value() -> BotUpdate | BotCreate:
@@ -227,7 +356,14 @@ def grid_dialog(
                     lower_price=Decimal(str(lower.value)),
                     upper_price=Decimal(str(upper.value)),
                     grid_count=int(count.value),
-                    budget_usd=Decimal(str(budget.value)),
+                    capital=GridMarginCapital(
+                        kind="margin",
+                        investment_usd=Decimal(str(budget.value)),
+                        leverage=int(leverage.value),
+                        margin_mode=margin_mode.value,
+                    )
+                    if capital_kind.value == "margin"
+                    else GridNotionalCapital(kind="notional", notional_usd=Decimal(str(budget.value))),
                     slippage_bps=Decimal(str(slippage.value)) * 100,
                 ),
             )
@@ -235,6 +371,8 @@ def grid_dialog(
 
         def validate() -> bool:
             controls: list[ValidationElement] = [name, lower, upper, count, budget, slippage]
+            if capital_kind.value == "margin":
+                controls.append(leverage)
             valid = all([control.validate() for control in controls])
             error.set_text("" if valid else "请先修正标红的字段。")
             return valid
@@ -256,6 +394,9 @@ def grid_dialog(
                 upper,
                 count,
                 budget,
+                capital_kind,
+                leverage,
+                margin_mode,
                 slippage,
                 range_button,
             ]
