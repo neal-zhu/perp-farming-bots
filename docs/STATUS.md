@@ -32,7 +32,7 @@ Updated 2026-10-13 (Asia/Shanghai). The application now uses native exchange acc
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- 153 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- 161 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
@@ -69,3 +69,11 @@ Long, short and neutral price-triggered perpetual grids are implemented for the 
 Grid tests cover directional accumulation/reduction, neutral zero-before-reverse, interval boundaries, pause/resume, unknown and partial fills without resend, original synchronization, healthy restart, external inventory/orders, schema 4 preservation, locked geometry and budget validation. Tests send no venue orders. Funded grid acceptance remains user-controlled.
 
 Local release backed up schema 4 and preserved the existing live hedge bot’s parameters, state, allocated inventory, original orders/fills/operations, turnover and user-selected reopening deadline exactly. The grid chooser and three-direction form were checked in the actual browser without saving or running a grid. Wheel includes upstream license/notice; Docker packaging includes the same files.
+
+## Grid parameter preflight (2026-10-13)
+
+A user-created ETH grid retained a BTC-scale price range after changing symbol and failed minimum-order checks only on run. Native rules confirmed the actual Arcus ETH minimum quantity/notional; its current account balance exceeded the selected $20 budget. An API regression reproduced invalid configuration saving with HTTP 201. The fix validates grid create/update in both browser and API before persistence, reuses the same checked preview at run, reports quantized minimum budget and fresh account funds, and excludes an edited bot from its own account reservation. Name/slippage-only edits to initialized grids preserve existing inventory without requiring the full budget as idle collateral again.
+
+Symbol changes clear price bounds. Parameter changes invalidate previous previews, and late quotes cannot overwrite a newly selected symbol or manually edited range. Save fields remain disabled during native validation and are restored on failure without losing input. Tests cover early API/UI rejection, insufficient/unavailable funds, minimum precision, own-bot edit previews, holding edits and currency/late-response handling. No saved bot parameters or trading actions were changed for verification.
+
+The updated local service preserved both existing bots’ configuration, states, allocated inventory, native journals and cycles. Read-only preview of the saved ETH/BTC-scale range rejects before submission; a same-account ETH preview at 2,260–2,770, six neutral grids and $20 passed with an exact minimum budget of $18.385044 and real available collateral. The browser showed the pre-save error and then the corrected range, quantities, minimum budget, fresh funds and check time. The corrected range remains an unsaved draft for the user; no run/save trading control was submitted.

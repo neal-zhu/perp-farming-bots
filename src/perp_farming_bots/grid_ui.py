@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from nicegui import ui
 from nicegui.elements.mixins.disableable_element import DisableableElement
 from nicegui.elements.mixins.validation_element import ValidationElement
 from pydantic import ValidationError
 
-from .formatting import money
+from .formatting import money, stamp
 from .grid import GridPreview
 from .models import GRID_DIRECTION_NAMES, PROVIDER_NAMES, BotCreate, BotUpdate, GridParameters
 from .runtime import Runtime, bounded_price
@@ -104,18 +104,23 @@ def grid_dialog(
         error.bind_visibility_from(error, "text", backward=bool)
 
         async def fill_range():
+            revision = input_revision
+            requested_symbol, requested_account = symbol.value, account.value
             try:
-                connection = store.connection(account.value)
-                book = await runtime.markets.book(connection.provider, symbol.value, refresh=True)
+                connection = store.connection(requested_account)
+                book = await runtime.markets.book(connection.provider, requested_symbol, refresh=True)
                 if not book.fresh():
                     raise ValueError("行情已过期，请重试")
-                spec = await runtime.markets.spec(connection.provider, symbol.value)
+                spec = await runtime.markets.spec(connection.provider, requested_symbol)
+                if revision != input_revision or dialog.is_deleted:
+                    return
                 mid = (book.bids[0].price + book.asks[0].price) / 2
                 lower.set_value(float(bounded_price(mid * Decimal("0.9"), spec, "buy")))
                 upper.set_value(float(bounded_price(mid * Decimal("1.1"), spec, "sell")))
                 error.set_text("")
             except ValueError as exc:
-                error.set_text(str(exc))
+                if revision == input_revision and not dialog.is_deleted:
+                    error.set_text(str(exc))
 
         range_button = (
             ui.button("填入当前价 ±10%", icon="auto_fix_high", on_click=fill_range)
@@ -157,6 +162,9 @@ def grid_dialog(
                 .classes("flex-1 min-w-40")
             )
         ui.label("预算是区间内最大名义仓位上限，不是保证金；按交易所精度向下取整，每格数量固定。").classes(
+            "text-xs text-slate-500"
+        )
+        ui.label("预览和保存前都会检查账户余额、每格最低金额及该币种仓位；运行时再次核对。").classes(
             "text-xs text-slate-500"
         )
         slippage = (
@@ -201,7 +209,22 @@ def grid_dialog(
         with preview_box:
             initial_label = ui.label().classes("font-semibold")
             size_label, range_label = ui.label(), ui.label()
+            funds_label = ui.label().classes("text-xs text-emerald-800")
         busy = False
+        input_revision = 0
+
+        def invalidate(*, clear_range: bool = False):
+            nonlocal input_revision
+            input_revision += 1
+            preview_box.set_visibility(False)
+            error.set_text("")
+            if clear_range:
+                lower.set_value(None)
+                upper.set_value(None)
+
+        symbol.on_value_change(lambda: invalidate(clear_range=True))
+        for input_control in [account, direction, lower, upper, count, budget, slippage]:
+            input_control.on_value_change(invalidate)
 
         def value() -> BotUpdate | BotCreate:
             values = BotUpdate(
@@ -228,9 +251,12 @@ def grid_dialog(
         async def preview():
             if not validate():
                 return
+            revision = input_revision
             try:
-                result = await runtime.preview(value())
+                result = await runtime.preview(value(), bot_id=bot_id)
                 assert isinstance(result, GridPreview)
+                if revision != input_revision or dialog.is_deleted:
+                    return
                 position = (
                     "无初始仓位"
                     if result.initial_quantity == 0
@@ -252,10 +278,15 @@ def grid_dialog(
                 range_label.set_text(
                     f"实际格线区间 {money(result.levels[0])}–{money(result.levels[-1])} · 当前价 {money(result.current_price)}"
                 )
+                minimum = result.minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+                funds_label.set_text(
+                    f"账户可用 {money(result.account_available)} · 此配置最低预算 {money(minimum)} · 检查于 {stamp(result.account_checked_at)}"
+                )
                 preview_box.set_visibility(True)
             except ValueError as exc:
-                preview_box.set_visibility(False)
-                error.set_text(str(exc))
+                if revision == input_revision and not dialog.is_deleted:
+                    preview_box.set_visibility(False)
+                    error.set_text(str(exc))
 
         async def save():
             nonlocal busy
@@ -263,9 +294,25 @@ def grid_dialog(
                 return
             busy = True
             save_button.disable()
+            save_controls: list[DisableableElement] = [
+                name,
+                account,
+                symbol,
+                direction,
+                lower,
+                upper,
+                count,
+                budget,
+                slippage,
+                range_button,
+            ]
+            previous_enabled = [control.enabled for control in save_controls]
+            for control in save_controls:
+                control.disable()
             try:
                 async with runtime.guard:
                     result = value()
+                    await runtime.validate_configuration(result, bot_id=bot_id)
                     if bot_id:
                         store.update_bot(bot_id, result)
                     else:
@@ -282,6 +329,8 @@ def grid_dialog(
                 busy = False
                 if not save_button.is_deleted:
                     save_button.enable()
+                    for control, enabled in zip(save_controls, previous_enabled):
+                        control.set_enabled(enabled)
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("取消", on_click=dialog.close).props("flat")

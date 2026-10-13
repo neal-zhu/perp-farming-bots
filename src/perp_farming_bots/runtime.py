@@ -172,10 +172,26 @@ class Runtime:
                     except ValueError as exc:
                         self.store.alert(str(exc), bot_id, "warning")
 
-    async def preview(self, value: BotCreate | BotUpdate | Bot) -> Preview | GridPreview:
+    async def validate_configuration(
+        self, value: BotCreate | BotUpdate, *, bot_id: str | None = None
+    ) -> None:
+        if not isinstance(value.parameters, GridParameters):
+            return
+        if bot_id is not None:
+            previous = self.store.bot(bot_id)
+            entry_fields = set(GridParameters.model_fields) - {"slippage_bps"}
+            if self.store.grid_state(bot_id) is not None and value.parameters.model_dump(
+                include=entry_fields
+            ) == previous.parameters.model_dump(include=entry_fields):
+                return  # A name/slippage edit does not request a new inventory allocation.
+        await self.grid.preview(value, bot_id=bot_id)
+
+    async def preview(
+        self, value: BotCreate | BotUpdate | Bot, *, bot_id: str | None = None
+    ) -> Preview | GridPreview:
         p = value.parameters
         if isinstance(p, GridParameters):
-            return await self.grid.preview(value)
+            return await self.grid.preview(value, bot_id=bot_id)
         assert isinstance(p, HedgeParameters)
         long, short = (
             self.store.connection(p.long_connection_id),

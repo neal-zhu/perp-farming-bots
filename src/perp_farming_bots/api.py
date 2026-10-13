@@ -107,6 +107,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
     @app.post("/api/bots", status_code=201)
     async def create_bot(value: BotCreate):
         async with runtime.guard:
+            await runtime.validate_configuration(value)
             return store.add_bot(value).model_dump(mode="json")
 
     @app.get("/api/bots")
@@ -148,7 +149,13 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
     @app.put("/api/bots/{bot_id}")
     async def update_bot(bot_id: str, value: BotUpdate):
         async with runtime.guard:
+            await runtime.validate_configuration(value, bot_id=bot_id)
             return store.update_bot(bot_id, value).model_dump(mode="json")
+
+    @app.post("/api/bots/{bot_id}/preview")
+    async def preview_existing_bot(bot_id: str, value: BotUpdate):
+        store.bot(bot_id)
+        return (await runtime.preview(value, bot_id=bot_id)).model_dump(mode="json")
 
     @app.post("/api/bots/{bot_id}/commands")
     async def command(bot_id: str, value: Command):

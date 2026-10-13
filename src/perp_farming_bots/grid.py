@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
@@ -22,6 +22,10 @@ class GridPreview(StrictModel):
     cursor: int
     current_price: Decimal
     inside_range: bool
+    minimum_budget: Decimal
+    minimum_quantity_per_grid: Decimal
+    account_available: Decimal
+    account_checked_at: float
     execution: str = "price_triggered_ioc"
 
 
@@ -45,12 +49,14 @@ class Grid:
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
 
-    async def preview(self, value: BotCreate | BotUpdate | Bot) -> GridPreview:
+    async def preview(self, value: BotCreate | BotUpdate | Bot, *, bot_id: str | None = None) -> GridPreview:
         from .runtime import bounded_price, quantity_floor
 
         p = value.parameters
         assert isinstance(p, GridParameters)
         r = self.runtime
+        owner = value.id if isinstance(value, Bot) else bot_id
+        r.store.check_strategy_accounts(p, bot_id=owner)
         connection = r.store.connection(p.connection_id)
         spec = await r.markets.spec(connection.provider, p.symbol)
         book = await r.markets.book(connection.provider, p.symbol, refresh=True)
@@ -62,9 +68,27 @@ class Grid:
         if low >= high or any(a >= b for a, b in zip(levels, levels[1:])) or levels[-1] > p.upper_price:
             raise ValueError("区间过窄，按交易所价格精度无法生成独立格线；请扩大区间或减少格数")
         max_units = p.grid_count // 2 if p.direction == "neutral" else p.grid_count
+        minimum_quantity = (
+            max(spec.quantity_step, spec.min_quantity, spec.min_notional / levels[0]) / spec.quantity_step
+        ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
+        minimum_budget = minimum_quantity * levels[-1] * max_units
+        minimum_budget_cents = minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
         quantity = quantity_floor(p.budget_usd / levels[-1] / max_units, spec.quantity_step)
         if quantity <= 0 or quantity < spec.min_quantity or quantity * levels[0] < spec.min_notional:
-            raise ValueError("每格金额低于交易所最小订单；请增加预算或减少格数")
+            raise ValueError(
+                f"每格数量 {quantity} {p.symbol} 低于最小订单要求。"
+                f"按此区间和 {p.grid_count} 格，预算至少 ${minimum_budget_cents:,.2f}，"
+                f"每格至少 {minimum_quantity} {p.symbol}。请先核对币种和价格区间，再调整格数或预算。"
+            )
+        await r._check_inventory(p.connection_id, p.symbol)
+        account = r.accounts.snapshots[p.connection_id]
+        if account.available < p.budget_usd:
+            raise ValueError(
+                f"账户可用余额 ${account.available:,.2f}，低于网格预算 ${p.budget_usd:,.2f}。"
+                f"当前格数和区间最低预算 ${minimum_budget_cents:,.2f}；请调整预算或格数。"
+            )
+        if not book.fresh():
+            raise ValueError("资金检查期间行情已过期，请重新预览")
         midpoint = (book.asks[0].price + book.bids[0].price) / 2
         cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
         return GridPreview(
@@ -76,6 +100,10 @@ class Grid:
             cursor=cursor,
             current_price=midpoint,
             inside_range=levels[0] <= midpoint <= levels[-1],
+            minimum_budget=minimum_budget,
+            minimum_quantity_per_grid=minimum_quantity,
+            account_available=account.available,
+            account_checked_at=account.received_at,
         )
 
     async def command(self, bot: Bot, action: str) -> None:
@@ -97,8 +125,6 @@ class Grid:
                 r.store.set_state(bot.id, BotState.HOLDING, "网格已恢复，继续等待原相邻格线")
             else:
                 await self.preview(bot)
-                if r.accounts.snapshots[p.connection_id].available < p.budget_usd:
-                    raise ValueError("可用抵押资产不足以覆盖网格预算，请减少预算")
                 r.store.set_state(bot.id, BotState.WAITING, "等待区间内价格，随后建立初始网格仓位")
         elif action == "pause":
             if bot.state not in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION}:

@@ -365,13 +365,18 @@ class Store:
     def check_grid_reservation(self, bot: Bot) -> None:
         if bot.state == BotState.CLOSED:
             return
+        self.check_strategy_accounts(bot.parameters, bot_id=bot.id)
+
+    def check_strategy_accounts(
+        self, parameters: HedgeParameters | GridParameters, *, bot_id: str | None = None
+    ) -> None:
         for other in self.bots():
-            if other.id == bot.id or other.state == BotState.CLOSED:
+            if other.id == bot_id or other.state == BotState.CLOSED:
                 continue
             if (
-                (bot.strategy == "grid" or other.strategy == "grid")
-                and bot.parameters.symbol == other.parameters.symbol
-                and set(bot.parameters.connection_ids) & set(other.parameters.connection_ids)
+                (isinstance(parameters, GridParameters) or other.strategy == "grid")
+                and parameters.symbol == other.parameters.symbol
+                and set(parameters.connection_ids) & set(other.parameters.connection_ids)
             ):
                 raise ValueError(
                     f"网格需要独占账户的该币种，已被 Bot「{other.name}」使用；请选择其他账户或币种"
