@@ -14,7 +14,7 @@ Updated 2026-10-14 (Asia/Shanghai).
 - Original-order recovery after lost acknowledgements and restart, without automatic order resubmission or portfolio risk trading.
 - Temporary quote outages skip trading and retain the selected running state. Uncertain orders or partial inventory block new actions until resolved.
 - Robinhood account points sampling every two minutes and 24-hour, seven-day and 30-day history curves. Missing samples remain gaps.
-- Persistent panels with local updates, inline form validation, in-app alerts and optional Telegram notifications.
+- Persistent panels with local updates, inline form validation, in-app alerts and optional Telegram notifications. Saved grids explicitly show Ready and the Run action; ungenerated trigger lines are not presented as an initialization in progress.
 - Database format 7. Grid capital has one structure: investment, leverage and margin mode. Unsupported database/configuration formats fail explicitly; no conversion branches are included.
 
 ## Validation

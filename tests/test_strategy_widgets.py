@@ -18,6 +18,23 @@ from perp_farming_bots.strategy_widgets import (
 )
 
 
+async def test_saved_grid_shows_required_run_action_instead_of_waiting_for_initialization(page, env):
+    store, runtime, account, _ = env
+    bot = grid_bot(store, account)
+    runtime.last_tick = time.time()
+    with page:
+        monitor = GridMonitor()
+    monitor.update(bot, store, await observe_strategy(runtime, bot))
+    assert monitor.status.text == "待运行"
+    assert "点击“运行”" in monitor.explanation.text
+    assert "等待初始化" not in [value.text for value in monitor.values]
+    assert monitor.rows == {} and not monitor.wall.visible
+    assert store.bot(bot.id).state == BotState.READY
+    assert store.grid_state(bot.id) is None and store.bot_orders(bot.id) == []
+    assert runtime.accounts.adapter(account.id).sent == []
+    assert runtime.accounts.adapter(account.id).margin_sent == []
+
+
 async def test_neutral_wall_explains_zero_inventory_and_next_actual_lines(page, env, monkeypatch):
     store, runtime, account, _ = env
     _, adapter = await grid_market(runtime, account, monkeypatch)
@@ -94,7 +111,7 @@ async def test_uninitialized_grid_does_not_invent_exchange_quantized_lines(page,
         monitor = GridMonitor()
     monitor.update(bot, store, await observe_strategy(runtime, bot))
     assert monitor.rows == {} and not monitor.wall.visible and monitor.empty.visible
-    assert monitor.values[1].text == "等待初始化"
+    assert monitor.values[1].text == "尚未生成"
     assert runtime.accounts.adapter(account.id).sent == []
 
 

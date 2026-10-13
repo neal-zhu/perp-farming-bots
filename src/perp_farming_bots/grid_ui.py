@@ -205,7 +205,7 @@ def grid_dialog(
             amount = Decimal(str(budget.value)) if budget.value is not None else None
             multiple = Decimal(str(leverage.value)) if leverage.value is not None else None
             capital_help.set_text(
-                f"{money(amount)} 保证金 × {multiple.normalize():f} 倍 ≈ {money(amount * multiple)} 区间内仓位上限"
+                f"{money(amount)} 保证金 × {multiple.normalize():f} 倍 ≈ {money(amount * multiple)} 整个 Bot 持仓上限（区间内）"
                 if amount is not None and multiple is not None
                 else "填写金额和杠杆后自动计算仓位上限"
             )

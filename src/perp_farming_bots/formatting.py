@@ -7,7 +7,7 @@ from .models import GridParameters
 
 
 def grid_capital_text(p: GridParameters) -> str:
-    return f"保证金额度 {money(p.capital.investment_usd)} · {p.capital.leverage} 倍 · {'全仓' if p.capital.margin_mode == 'cross' else '逐仓'} · 区间内仓位上限 {money(p.notional_limit)}"
+    return f"保证金额度 {money(p.capital.investment_usd)} · {p.capital.leverage} 倍 · {'全仓' if p.capital.margin_mode == 'cross' else '逐仓'} · Bot 持仓上限（区间内） {money(p.notional_limit)}"
 
 
 def money(value: str | Decimal | None) -> str:

@@ -157,6 +157,8 @@ class GridMonitor(StrategyMonitor):
         self.caption.set_text(
             "上次运行的格线 · 重新运行会重新初始化"
             if bot.state == BotState.CLOSED
+            else "尚未启动 · 点击运行后生成格线"
+            if bot.state == BotState.READY
             else "程序内等待价格触发 · 交易所未提前挂单"
         )
         state = store.grid_state(bot.id)
@@ -192,9 +194,16 @@ class GridMonitor(StrategyMonitor):
         self.wall.set_visibility(state is not None)
         self.empty.set_visibility(state is None)
         if state is None:
+            self.empty.set_text(
+                "点击“运行”后生成格线和每格数量"
+                if bot.state == BotState.READY and not pending
+                else "运行后显示实际格线和每格数量"
+            )
             for i in (1, 2):
-                self.values[i].set_text("等待初始化")
-                self.hints[i].set_text("运行后按实际格线确定")
+                self.values[i].set_text("尚未生成")
+                self.hints[i].set_text(
+                    "点击运行后生成" if bot.state == BotState.READY and not pending else "初始化完成后显示"
+                )
             self.status.set_text(
                 "网格已结束"
                 if bot.state == BotState.CLOSED
@@ -204,10 +213,17 @@ class GridMonitor(StrategyMonitor):
                 if pending or bot.state == BotState.ATTENTION
                 else "等待价格进入区间"
                 if bot.state == BotState.WAITING
+                else "待运行"
+                if bot.state == BotState.READY
                 else "网格尚未初始化"
             )
             self.explanation.set_text(
-                f"价格区间 {money(p.lower_price)} – {money(p.upper_price)} · {p.grid_count} 格。{bot.reason}"
+                f"价格区间 {money(p.lower_price)} – {money(p.upper_price)} · {p.grid_count} 格。"
+                + (
+                    "点击“运行”启动策略，按当前价格确定初始仓位。"
+                    if bot.state == BotState.READY and not pending
+                    else bot.reason
+                )
                 + (
                     " 点击“重新运行”会检查账户并按当前价格重新初始化网格。"
                     if bot.state == BotState.CLOSED
