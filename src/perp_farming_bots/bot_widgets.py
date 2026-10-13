@@ -18,6 +18,7 @@ from .models import (
     Position,
 )
 from .store import Store, alerts
+from .strategy_widgets import GridMonitor, HedgeMonitor
 
 
 class BotLeg:
@@ -133,6 +134,7 @@ class BotCard:
                 self.exposure = ui.label()
             self.pnl_error = ui.label().classes("pfb-data-warning")
             self.reopen_status = ui.label().classes("text-xs text-slate-500 mt-3")
+            self.monitor = self.build_monitor()
             with ui.element("div").classes("pfb-position-heading"):
                 ui.label("持仓明细").classes("pfb-section-title")
                 self.match = ui.badge(color=None).classes("pfb-match")
@@ -171,6 +173,9 @@ class BotCard:
                             funding_title = ui.label().classes("pfb-detail-title")
                             previous, settlement, received = ui.label(), ui.label(), ui.label()
                             self.funding_details[role] = funding_title, previous, settlement, received
+
+    def build_monitor(self) -> HedgeMonitor | GridMonitor:
+        return HedgeMonitor()
 
     def update(self, bot: Bot, store: Store, pnl: dict[str, Any], funding: dict[str, Any]):
         assert isinstance(bot.parameters, HedgeParameters)
@@ -322,6 +327,10 @@ class BotCard:
 
 
 class GridBotCard(BotCard):
+    def build_monitor(self) -> GridMonitor:
+        self.reopen_status.set_visibility(False)
+        return GridMonitor()
+
     def update(self, bot: Bot, store: Store, pnl: dict[str, Any], funding: dict[str, Any]):
         p = bot.parameters
         assert isinstance(p, GridParameters)

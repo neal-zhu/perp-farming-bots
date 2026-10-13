@@ -29,6 +29,7 @@ from .notifications import Notifications
 from .points_widgets import PointsFeed
 from .runtime import Runtime
 from .store import Store, fills, operations
+from .strategy_widgets import observe_strategy
 
 
 def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> None:
@@ -122,10 +123,15 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         if bid not in keep:
                             bot_cards.pop(bid).root.delete()
                     for bot in current:
-                        pnl, funding = await asyncio.gather(runtime.pnl(bot.id), runtime.funding(bot.id))
+                        pnl, funding, strategy_market = await asyncio.gather(
+                            runtime.pnl(bot.id), runtime.funding(bot.id), observe_strategy(runtime, bot)
+                        )
                         if bot.id not in {b.id for b in store.bots()}:
                             continue
-                        bot = store.bot(bot.id)
+                        latest_bot = store.bot(bot.id)
+                        if latest_bot.parameters != bot.parameters:
+                            continue  # A form edit during the read must not display the prior asset's quotes.
+                        bot = latest_bot
                         if bot.id not in bot_cards:
                             with cards_container:
                                 card_class = GridBotCard if bot.strategy == "grid" else BotCard
@@ -133,6 +139,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                                     bot.id, action, bot_dialog, delete_dialog, close_dialog, detail_dialog
                                 )
                         bot_cards[bot.id].update(bot, store, pnl, funding)
+                        bot_cards[bot.id].monitor.update(bot, store, strategy_market)
 
             def detail_dialog(bot_id: str):
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-4xl p-6"):

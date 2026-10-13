@@ -74,6 +74,49 @@ BOT_STYLES = """
 .pfb-details-body { padding: 10px 0 2px; line-height: 1.65; font-size: 12px; color: #64748b; }
 .pfb-detail-funding { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
 .pfb-detail-title { font-weight: 600; color: #475569; }
+.pfb-strategy-monitor { margin-top: 18px; padding: 18px; border: 1px solid #e2e8f0;
+  border-radius: 10px; background: linear-gradient(130deg, #f8fafc 0%, #fff 70%); }
+.pfb-monitor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pfb-monitor-title { font-size: 14px; font-weight: 650; color: #17243b; }
+.pfb-monitor-health { font-size: 11px; color: #64748b; }
+.pfb-monitor-health--live { color: #047857; }
+.pfb-monitor-health--live::before { content: ''; display: inline-block; width: 5px; height: 5px;
+  border-radius: 50%; background: #10b981; margin-right: 5px; vertical-align: middle; }
+.pfb-monitor-caption { margin-top: 4px; color: #64748b; font-size: 11px; }
+.pfb-monitor-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.pfb-monitor-stat-title { font-size: 11px; color: #64748b; }
+.pfb-monitor-stat-value { margin-top: 5px; font-size: 22px; font-weight: 650; color: #1e293b; letter-spacing: -.4px; }
+.pfb-monitor-stat-hint { margin-top: 4px; font-size: 11px; color: #64748b; }
+.pfb-grid-monitor .pfb-monitor-stat:nth-child(2) .pfb-monitor-stat-value { color: #047857; }
+.pfb-grid-monitor .pfb-monitor-stat:nth-child(3) .pfb-monitor-stat-value { color: #be3851; }
+.pfb-monitor-status { font-size: 13px; font-weight: 600; color: #334155; margin-top: 18px; }
+.pfb-monitor-explanation { color: #64748b; font-size: 12px; line-height: 1.7; margin-top: 3px; }
+.pfb-grid-inventory { margin-top: 13px; color: #475569; font-size: 11px; }
+.pfb-grid-wall { margin-top: 12px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #fff; }
+.pfb-grid-wall-head, .pfb-grid-line { display: grid; grid-template-columns: 1.1fr 1fr 1.1fr 1.2fr;
+  align-items: center; gap: 10px; padding: 9px 12px; }
+.pfb-grid-wall-head { color: #64748b; font-size: 10px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+.pfb-grid-wall-head > :last-child, .pfb-grid-line-status { text-align: right; }
+.pfb-grid-lines { display: flex; flex-direction: column; max-height: 350px; overflow-y: auto; }
+.pfb-grid-line { font-size: 12px; border-bottom: 1px solid #edf1f5; min-height: 39px; }
+.pfb-grid-line--sell { background: #fffafb; }
+.pfb-grid-line--buy { background: #f9fdfb; }
+.pfb-grid-line--sell .pfb-grid-line-price, .pfb-grid-line--sell .pfb-grid-line-action { color: #be3851; }
+.pfb-grid-line--buy .pfb-grid-line-price, .pfb-grid-line--buy .pfb-grid-line-action { color: #047857; }
+.pfb-grid-line--sell.pfb-grid-line--next { background: #fff0f3; box-shadow: inset 3px 0 #e85c75; }
+.pfb-grid-line--buy.pfb-grid-line--next { background: #eaf8f2; box-shadow: inset 3px 0 #10a675; }
+.pfb-grid-line-price { font-weight: 600; }
+.pfb-grid-line-quantity { color: #475569; font-size: 11px; }
+.pfb-grid-line-status { color: #94a3b8; font-size: 10px; }
+.pfb-grid-line--next .pfb-grid-line-status { color: #475569; font-weight: 600; }
+.pfb-grid-line--cursor { color: #94a3b8; background: #f8fafc; }
+.pfb-grid-line--cursor .pfb-grid-line-price { color: #64748b; }
+.pfb-grid-ticker { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  color: #1d4ed8; background: #edf4ff; border-top: 1px solid #dbeafe; border-bottom: 1px solid #dbeafe;
+  font-size: 12px; font-weight: 600; }
+.pfb-grid-ticker-hint { font-size: 10px; font-weight: 400; margin-left: auto; color: #64748b; }
+.pfb-monitor-empty { color: #64748b; font-size: 12px; padding: 15px 0; }
+.pfb-monitor-footnote { color: #94a3b8; font-size: 10px; line-height: 1.6; margin-top: 9px; }
 @media (max-width: 520px) {
   .pfb-bot-card.q-card { padding: 16px; }
   .pfb-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
@@ -89,5 +132,13 @@ BOT_STYLES = """
   .pfb-mobile-label { display: block; color: #64748b; font-size: 11px; margin-bottom: 2px; }
   .pfb-bot-name { font-size: 17px; }
   .pfb-header-actions { gap: 3px; }
+  .pfb-strategy-monitor { padding: 13px; }
+  .pfb-monitor-stats { gap: 10px; }
+  .pfb-monitor-stat-value { font-size: 18px; }
+  .pfb-monitor-stat-hint { font-size: 10px; }
+  .pfb-grid-wall-head, .pfb-grid-line { grid-template-columns: 1fr .8fr 1fr; gap: 7px; padding: 9px; }
+  .pfb-grid-wall-head > :last-child { display: none; }
+  .pfb-grid-line-status { grid-column: 1 / -1; text-align: left; font-size: 10px; margin-top: -4px; }
+  .pfb-grid-line { min-height: 50px; }
 }
 """

@@ -32,7 +32,7 @@ Updated 2026-10-13 (Asia/Shanghai). The application now uses native exchange acc
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- 161 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- 167 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
@@ -83,3 +83,13 @@ The updated local service preserved both existing bots’ configuration, states,
 The grid form now submits through one Save button. The redundant preview button and panel are removed; native parameter validation remains mandatory before browser/API persistence. While checking, Save shows a loading state and prevents duplicate submission. Failures appear next to Save and preserve entered values. Read-only API previews remain available for integrations and diagnostics. Currency changes and late-quote handling are unchanged.
 
 All 161 tests passed, including the actual form callback rejecting an invalid budget without saving or losing input. Ruff and mypy passed. The local service update preserved both bots and all ten existing native order journals, inventory and cycle deadlines. Browser verification confirmed only Cancel and Save in the form footer; the ETH range draft was restored after reload and remains unsaved. No live trading action was submitted.
+
+## Strategy-specific monitoring (2026-10-13)
+
+Grid cards now show a persistent red/green price ladder using durable, native-quantized grid state. The wall labels conditional plans rather than resting exchange orders; only adjacent lines are highlighted. Current native midpoint is positioned in the ladder, trigger distances use executable bid/ask, and actions distinguish opening from reduce-only. Actual allocated inventory and confirmed fill count remain separate from planned lines. Zero-target neutral initialization, paused/closed states, outside-range quotes, stale prices and uncertain orders have explicit explanations. Uninitialized configs do not invent a native grid layout.
+
+Hedge cards use the existing execution sizing/quote calculation to display current entry spread, threshold and target, plus scheduled close/random-wait countdowns. Preview evidence now includes the older native book timestamp so delayed UI reads cannot display an expired spread as current. Public observation reads do not call trading commands, alter bot state, or mutate trading journals. Form edits during a quote read discard the former configuration's observation.
+
+Six new monitor tests cover zero-inventory waiting, long/short open-versus-reduce labels, stable row identities, paused and expired-data handling, uninitialized geometry, and hedge quote conditions without new orders.
+
+All 167 tests, ruff and mypy passed; monitor tests additionally confirmed delayed quotes expire before rendering. The local service update preserved both bots, the initialized ETH cursor/quantity/levels, all ten existing native order journals, allocated inventory, configuration and cycle deadlines. Actual browser inspection showed the ETH ladder sorted by descending price with next-line highlights, a correctly positioned live price, an explicit zero-inventory explanation and updates in place. The hedge panel showed the native executable entry spread and a decreasing scheduled-close countdown. No trading control was clicked for verification.

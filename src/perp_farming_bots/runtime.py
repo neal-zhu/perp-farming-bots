@@ -222,6 +222,7 @@ class Runtime:
             spread_pct=(short_price / long_price - 1) * 100,
             estimated_fees=None,
             source=f"多腿：{long_book.source} / 空腿：{short_book.source}",
+            received_at=min(long_book.received_at, short_book.received_at),
         )
 
     def _direction_conflict(self, bot: Bot) -> None:

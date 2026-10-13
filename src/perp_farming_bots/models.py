@@ -256,6 +256,7 @@ class Preview(StrictModel):
     spread_pct: Decimal
     estimated_fees: Decimal | None
     source: str
+    received_at: float
 
 
 class FundingSnapshot(StrictModel):
