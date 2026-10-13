@@ -13,6 +13,8 @@
 
 ## Product and strategy scope
 
+- UI copy and user documentation must make sense to a new user without this development conversation. Do not include session-specific explanations, configuration-conversion stories or conversational reminders.
+- Keep one current configuration model. Do not add prerelease compatibility modes or automatic conversions for disposable older configurations; reject unsupported formats explicitly.
 - The product is Perp Farming Bots: a self-hosted application with built-in perpetual trading strategies. Hedging is the first strategy, not the product identity or the shared runtime's data model.
 - Model bot instances, strategy-owned state, allocated inventory, orders and execution operations explicitly. Shared execution must support one or multiple legs without making every action a paired hedge.
 - Future grid and scalping rules require explicit product specifications; do not invent or enable them because their names appear in documentation.
