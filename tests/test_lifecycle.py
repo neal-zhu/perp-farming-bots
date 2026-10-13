@@ -31,8 +31,26 @@ async def test_run_pauses_and_resumes_without_repeating_entry(env):
     assert len(runtime.accounts.adapter(a.id).sent) == len(runtime.accounts.adapter(b.id).sent) == 1
     await runtime.command(bot.id, "close")
     assert store.bot(bot.id).state == BotState.CLOSED
+    history = store.bot_orders(bot.id)
+    await runtime.command(bot.id, "run")
+    assert store.bot(bot.id).state == BotState.WAITING
+    assert store.cycle(bot.id)["number"] == 2 and store.cycle(bot.id)["open_operation_id"] is None
+    assert store.bot_orders(bot.id) == history
+    await runtime.sync(bot.id)
+    assert store.bot(bot.id).state == BotState.WAITING
+    assert await runtime.try_open(bot.id)
+    assert store.bot_orders(bot.id)[0]["operation_id"] != history[0]["operation_id"]
+
+
+async def test_closed_hedge_failed_preflight_preserves_cycle_and_journals(env):
+    store, runtime, a, b = env
+    bot = await open_bot(store, runtime, a, b)
+    await runtime.command(bot.id, "close")
+    before = store.bot(bot.id), store.cycle(bot.id), store.bot_orders(bot.id)
+    runtime.markets.stale = True
     with pytest.raises(ValueError):
         await runtime.command(bot.id, "run")
+    assert before == (store.bot(bot.id), store.cycle(bot.id), store.bot_orders(bot.id))
 
 
 async def test_close_without_inventory_does_not_change_waiting_state(env):

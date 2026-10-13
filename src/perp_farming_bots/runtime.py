@@ -269,6 +269,16 @@ class Runtime:
                 return
             assert isinstance(bot.parameters, HedgeParameters)
             if action == "run":
+                if bot.state == BotState.CLOSED:
+                    if self.store.positions(bot_id) or self.store.bot_pending(bot_id):
+                        raise ValueError("仍有分配仓位或未确认订单，不能重新运行")
+                    self.store.check_strategy_accounts(bot.parameters, bot_id=bot_id)
+                    self._direction_conflict(bot)
+                    await self.preview(bot)
+                    for connection_id in bot.parameters.connection_ids:
+                        await self._check_inventory(connection_id, bot.parameters.symbol)
+                    self.store.restart_closed_bot(bot_id)
+                    return
                 if bot.state not in {BotState.READY, BotState.PAUSED}:
                     raise ValueError("当前状态无法运行，请先核实订单和持仓")
                 if self.store.bot_pending(bot_id):

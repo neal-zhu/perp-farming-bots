@@ -70,7 +70,7 @@ class StrategyMonitor:
             with ui.element("div").classes("pfb-monitor-heading"):
                 ui.label(title).classes("pfb-monitor-title")
                 self.health = ui.label().classes("pfb-monitor-health")
-            ui.label(caption).classes("pfb-monitor-caption")
+            self.caption = ui.label(caption).classes("pfb-monitor-caption")
             with ui.element("div").classes("pfb-monitor-stats"):
                 self.values: list[ui.label] = []
                 self.hints: list[ui.label] = []
@@ -117,7 +117,7 @@ class GridLine:
 class GridMonitor(StrategyMonitor):
     def __init__(self):
         super().__init__(
-            "网格订单墙", "程序内等待价格触发 · 交易所未提前挂单", ("当前价格", "下一格买入", "下一格卖出")
+            "网格触发计划", "程序内等待价格触发 · 交易所未提前挂单", ("当前价格", "下一格买入", "下一格卖出")
         )
         self.values[0].tooltip("盘口中价仅用于定位；买入按可成交卖价、卖出按可成交买价检查触发。")
         self.root.classes("pfb-grid-monitor")
@@ -145,6 +145,11 @@ class GridMonitor(StrategyMonitor):
         assert isinstance(market, GridMarket) and isinstance(bot.parameters, GridParameters)
         p = bot.parameters
         self.set_health(bot, market.last_tick)
+        self.caption.set_text(
+            "上次运行的格线 · 重新运行会重新初始化"
+            if bot.state == BotState.CLOSED
+            else "程序内等待价格触发 · 交易所未提前挂单"
+        )
         state = store.grid_state(bot.id)
         pending = store.bot_pending(bot.id)
         positions = store.positions(bot.id)
@@ -181,6 +186,11 @@ class GridMonitor(StrategyMonitor):
             )
             self.explanation.set_text(
                 f"价格区间 {money(p.lower_price)} – {money(p.upper_price)} · {p.grid_count} 格。{bot.reason}"
+                + (
+                    " 点击“重新运行”会检查账户并按当前价格重新初始化网格。"
+                    if bot.state == BotState.CLOSED
+                    else ""
+                )
             )
             return
         levels = [Decimal(v) for v in state["levels"]]
@@ -221,7 +231,10 @@ class GridMonitor(StrategyMonitor):
         elif bot.state == BotState.PAUSED:
             status, explanation = "已暂停，格线不会触发交易", "保留原仓位和基准格线，点击运行后继续。"
         elif bot.state == BotState.CLOSED:
-            status, explanation = "网格已结束", "以下为已保存格线，当前不会触发交易。"
+            status, explanation = (
+                "网格已平仓，可以重新运行",
+                "点击“重新运行”会检查账户并按当前价格重新初始化网格；历史成交和累计金额保留。以下格线为上次运行记录。",
+            )
         elif not loop_alive(market.last_tick):
             status, explanation = "后台监测状态待确认", "暂时不能确认程序是否持续检查，请查看服务状态。"
         elif book is None:
@@ -320,7 +333,10 @@ class HedgeMonitor(StrategyMonitor):
         elif bot.state == BotState.PAUSED:
             status, explanation = "已暂停", "保留双腿仓位，自动重开不计时。"
         elif bot.state == BotState.CLOSED:
-            status, explanation = "已平仓，策略结束", bot.reason
+            status, explanation = (
+                "已平仓，可以重新运行",
+                "点击“重新运行”后检查账户，继续等待原价差条件；历史成交和累计金额保留。",
+            )
         elif bot.state == BotState.READY:
             status, explanation = "尚未运行", "点击运行后等待价差条件。"
         elif not loop_alive(market.last_tick):

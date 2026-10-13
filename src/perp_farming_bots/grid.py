@@ -112,6 +112,12 @@ class Grid:
         if r.store.bot_pending(bot.id):
             raise ValueError("网格有未确认订单或操作，请先同步原订单")
         if action == "run":
+            if bot.state == BotState.CLOSED:
+                if r.store.positions(bot.id):
+                    raise ValueError("仍有分配仓位，不能重新初始化网格，请先核实平仓结果")
+                await self.preview(bot)
+                r.store.restart_closed_bot(bot.id)
+                return
             if bot.state not in {BotState.READY, BotState.PAUSED}:
                 raise ValueError("当前状态无法运行网格，请先核实订单和持仓")
             r.store.check_grid_reservation(bot)
@@ -245,7 +251,11 @@ class Grid:
         if not history:
             return
         latest = history[0]
-        if latest["kind"] == "close" and not r.store.positions(bot_id):
+        if (
+            latest["kind"] == "close"
+            and latest["status"] in {"pending", "unknown", "attention"}
+            and not r.store.positions(bot_id)
+        ):
             r.store.finish_operation(latest["id"], "completed", "网格原平仓订单已确认")
             r.store.set_state(bot_id, BotState.CLOSED, "网格已确认平仓，结束运行")
         elif latest["kind"] in {"grid_initial", "grid_step"} and latest["status"] in {

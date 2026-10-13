@@ -24,3 +24,12 @@ Explicit differences: user fixes grid count; insufficient per-grid size fails in
 [Arcus place-order contract](https://docs.arcus.xyz/api-reference/exchange/place-order.md) confirms IOC never rests and requires future goodTilTime. The pinned [official Lighter signer](https://github.com/elliottech/lighter-python/blob/04bee9ba9811b87ef1cccc568e7f590b5fe649bb/lighter/signer_client.py) distinguishes LIMIT IOC (expiry 0) from good-till-time. The grid uses the existing verified IOC signing path. It does not label an acknowledgement as a fill or imply orders remain on the exchange when this application stops.
 
 Full resting-order grids would require persistent active-order/partial-fill accounting and journaled cancellation, which are not claimed by this first implementation.
+
+## Binance behavior comparison
+
+Checked official documentation on 2026-10-13:
+
+- [Binance Futures grid guide](https://www.binance.com/en/academy/articles/step-by-step-guide-to-grid-trading-on-binance-futures) describes a configured price range with limit orders at predefined levels. After a buy fills, the system places a sell above; after a sell fills, it places a buy below. This replenishes orders after fills rather than redrawing every level on each price update.
+- [Trailing Up / Trailing Down](https://www.binance.com/en/support/faq/detail/7a7bb22420404385991dee3a0930207d) is an optional mode that moves the range when its trailing conditions are met; it requires explicit trailing limits. Fixed geometry and exchange-resting order execution are separate choices.
+
+This application currently retains fixed geometry but submits IOC only after an executable quote triggers a level. It is not Binance-style resting-order execution and has no trailing-range option. No Binance source code was copied.

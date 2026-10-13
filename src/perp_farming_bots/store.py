@@ -516,6 +516,34 @@ class Store:
         state["initialized"] = bool(state["initialized"])
         return state
 
+    def restart_closed_bot(self, bot_id: str) -> None:
+        bot = self.bot(bot_id)
+        if bot.state != BotState.CLOSED:
+            raise ValueError("仅已平仓的 Bot 可以重新运行")
+        if self.positions(bot_id) or self.bot_pending(bot_id):
+            raise ValueError("仍有分配仓位或未确认订单，不能重新运行")
+        with self.transaction() as db:
+            if isinstance(bot.parameters, GridParameters):
+                # Remove only the active layout; original orders, fills and action journals remain.
+                db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
+                reason = "重新运行，等待区间内价格后初始化网格；历史成交保留"
+            else:
+                assert isinstance(bot.parameters, HedgeParameters)
+                cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
+                db.execute(
+                    update(bot_cycles)
+                    .where(bot_cycles.c.bot_id == bot_id)
+                    .values(
+                        number=cycle["number"] + (1 if cycle["open_operation_id"] is not None else 0),
+                        open_operation_id=None,
+                        opened_at=None,
+                        next_reopen_at=None,
+                        entry_not_before=None,
+                    )
+                )
+                reason = "重新运行，等待原价差条件开始下一轮；历史成交保留"
+            self.set_state(bot_id, BotState.WAITING, reason, db)
+
     def begin_grid_action(
         self, bot_id: str, cursor: int, target: Decimal, *, layout: dict[str, Any] | None = None
     ) -> str:

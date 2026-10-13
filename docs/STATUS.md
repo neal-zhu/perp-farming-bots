@@ -32,7 +32,7 @@ Updated 2026-10-13 (Asia/Shanghai). The application now uses native exchange acc
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- 167 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- 177 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
@@ -93,3 +93,13 @@ Hedge cards use the existing execution sizing/quote calculation to display curre
 Six new monitor tests cover zero-inventory waiting, long/short open-versus-reduce labels, stable row identities, paused and expired-data handling, uninitialized geometry, and hedge quote conditions without new orders.
 
 All 167 tests, ruff and mypy passed; monitor tests additionally confirmed delayed quotes expire before rendering. The local service update preserved both bots, the initialized ETH cursor/quantity/levels, all ten existing native order journals, allocated inventory, configuration and cycle deadlines. Actual browser inspection showed the ETH ladder sorted by descending price with next-line highlights, a correctly positioned live price, an explicit zero-inventory explanation and updates in place. The hedge panel showed the native executable entry spread and a decreasing scheduled-close countdown. No trading control was clicked for verification.
+
+## Reusing closed bots (2026-10-13)
+
+A closed grid now offers an explicit rerun after confirmed flat inventory. It performs the native preflight before atomically clearing only active geometry and returning to waiting; prior orders, fills, action journals and cumulative turnover remain. The next strategy tick initializes from current prices. Pause/resume keeps its original cursor, and rerun never happens automatically. Old completed close synchronization cannot end a newly authorized run. Uncertain orders, remaining allocated inventory, stale quotes, external orders, insufficient funds or another bot's reservation prevent resetting the old state. Closed hedge bots similarly validate accounts and start a fresh cycle with an empty opening identity and no armed timer; the original spread condition still gates the next entry. A never-entered cycle is reused rather than manufacturing an extra completed cycle.
+
+The wall heading is now “网格触发计划”; closed cards label their previous layout and explain reinitialization. Nine new tests exercise full and zero-target reruns, preserved evidence, old-close synchronization, preflight failures, inventory invariants, and an enabled UI control that does not activate execution by itself.
+
+Lifecycle tests additionally verify an explicit hedge rerun uses a new cycle/order identity, preserves old journals, and keeps a failed preflight's closed state unchanged. Both strategies retain user-controlled execution; an application update does not activate closed bots.
+
+All 177 tests, ruff and mypy passed. Local release preserved both user-closed bots, their parameters, the previous grid layout, cycles, turnover and all sixteen native order journals exactly. The browser shows enabled “重新运行” controls for both strategies and explains the new-run behavior; no control was clicked and both bots remain closed. Binance's official fixed-range/resting-order and optional trailing behavior is recorded in the grid research notes.

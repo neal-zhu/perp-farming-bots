@@ -282,7 +282,8 @@ class BotCard:
             replace="pfb-match pfb-match--"
             + ("bad" if mismatched else "good" if matched and not pnl["unavailable_reason"] else "unknown")
         )
-        can_run = (
+        can_restart = bot.state == BotState.CLOSED and not positions and not pending
+        can_run = can_restart or (
             bot.state in {BotState.READY, BotState.PAUSED}
             and not pending
             and (
@@ -296,6 +297,7 @@ class BotCard:
             and not positions
         )
         self.buttons["run"].set_enabled(can_run)
+        self.buttons["run"].set_text("重新运行" if bot.state == BotState.CLOSED else "运行")
         self.buttons["pause"].set_enabled(can_pause)
         self.buttons["sync"].set_visibility(bot.state == BotState.ATTENTION)
         self.close.set_enabled(
@@ -413,8 +415,10 @@ class GridBotCard(BotCard):
             or state["initialized"]
             and signed == target_quantity(p, state["cursor"], Decimal(state["quantity_per_grid"]))
         )
+        can_restart = bot.state == BotState.CLOSED and not positions and not pending
+        self.buttons["run"].set_text("重新运行" if bot.state == BotState.CLOSED else "运行")
         self.buttons["run"].set_enabled(
-            bot.state in {BotState.READY, BotState.PAUSED} and not pending and aligned
+            can_restart or bot.state in {BotState.READY, BotState.PAUSED} and not pending and aligned
         )
         self.buttons["pause"].set_enabled(
             bot.state in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION} and not pending
