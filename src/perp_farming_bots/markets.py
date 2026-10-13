@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import ssl
 import time
 from decimal import Decimal
@@ -34,6 +35,34 @@ class VenueRequestError(ValueError):
     @property
     def retryable_read(self) -> bool:
         return self.status_code is None or self.status_code in {404, 408, 425, 429} or self.status_code >= 500
+
+
+class QuoteUnavailable(ValueError):
+    """A quote read failed; this says nothing about an order's execution."""
+
+
+def require_fresh_book(book: Book, max_age: float = 15) -> None:
+    now = time.time()
+    age = now - book.received_at
+    if math.isfinite(age) and 0 <= age <= max_age:
+        return
+    logger.warning(
+        "book_freshness_rejected provider=%s symbol=%s age_seconds=%.6f max_age_seconds=%g venue_at=%.6f local_at=%.6f",
+        book.provider.value,
+        book.symbol,
+        age,
+        max_age,
+        book.received_at,
+        now,
+    )
+    reason = (
+        "盘口时间戳无效"
+        if not math.isfinite(age)
+        else "盘口时间戳超前"
+        if age < 0
+        else f"盘口已超过 {max_age:g} 秒时效（数据年龄 {age:.1f} 秒）"
+    )
+    raise QuoteUnavailable(f"{book.symbol} {reason}")
 
 
 class Markets:
@@ -195,41 +224,46 @@ class Markets:
         cached = self.cache.get(key)
         if not refresh and cached is not None and cached.fresh(2):
             return cached
-        async with self.locks.setdefault(key, asyncio.Lock()):
-            spec = await self.spec(provider, symbol)
-            if provider == Provider.ARCUS:
-                r = await self.request(
-                    provider, "GET", f"/v1/l2OrderBook/{spec.native_symbol}", params={"nLevels": 20}
+        try:
+            async with self.locks.setdefault(key, asyncio.Lock()):
+                spec = await self.spec(provider, symbol)
+                if provider == Provider.ARCUS:
+                    r = await self.request(
+                        provider, "GET", f"/v1/l2OrderBook/{spec.native_symbol}", params={"nLevels": 20}
+                    )
+                    bids, asks = r["bids"], r["asks"]
+                    received_at = r["timestamp"] / 1_000_000
+                else:
+                    r = await self.request(
+                        provider,
+                        "GET",
+                        "/api/v1/orderBookOrders",
+                        params={"market_id": spec.market_id, "limit": 20},
+                    )
+                    bids = [(x["price"], x["remaining_base_amount"]) for x in r["bids"]]
+                    asks = [(x["price"], x["remaining_base_amount"]) for x in r["asks"]]
+                    received_at = time.time()
+                book = Book(
+                    provider=provider,
+                    symbol=symbol,
+                    bids=sorted(
+                        [Level(price=x[0], quantity=x[1]) for x in bids if Decimal(x[1]) > 0],
+                        key=lambda x: x.price,
+                        reverse=True,
+                    ),
+                    asks=sorted(
+                        [Level(price=x[0], quantity=x[1]) for x in asks if Decimal(x[1]) > 0],
+                        key=lambda x: x.price,
+                    ),
+                    received_at=received_at,
+                    source=f"{PROVIDER_NAMES[provider]} 官方盘口",
                 )
-                bids, asks = r["bids"], r["asks"]
-                received_at = r["timestamp"] / 1_000_000
-            else:
-                r = await self.request(
-                    provider,
-                    "GET",
-                    "/api/v1/orderBookOrders",
-                    params={"market_id": spec.market_id, "limit": 20},
-                )
-                bids = [(x["price"], x["remaining_base_amount"]) for x in r["bids"]]
-                asks = [(x["price"], x["remaining_base_amount"]) for x in r["asks"]]
-                received_at = time.time()
-            book = Book(
-                provider=provider,
-                symbol=symbol,
-                bids=sorted(
-                    [Level(price=x[0], quantity=x[1]) for x in bids if Decimal(x[1]) > 0],
-                    key=lambda x: x.price,
-                    reverse=True,
-                ),
-                asks=sorted(
-                    [Level(price=x[0], quantity=x[1]) for x in asks if Decimal(x[1]) > 0],
-                    key=lambda x: x.price,
-                ),
-                received_at=received_at,
-                source=f"{PROVIDER_NAMES[provider]} 官方盘口",
-            )
-            self.cache[key] = book
-            return book
+                self.cache[key] = book
+                return book
+        except VenueRequestError as exc:
+            if exc.status_code is None or exc.status_code in {408, 425, 429} or exc.status_code >= 500:
+                raise QuoteUnavailable(f"{symbol} 盘口获取暂时失败：{exc}") from exc
+            raise
 
     async def _funding_data(self, provider: Provider, spec: MarketSpec) -> dict[str, Any]:
         if provider == Provider.ARCUS:

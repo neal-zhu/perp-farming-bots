@@ -697,6 +697,33 @@ class Store:
             )
         return op_id
 
+    def skip_unsent_grid_action(self, bot_id: str, op_id: str, reason: str) -> None:
+        """Only a pending action with no order journal can be skipped and retried."""
+        with self.transaction() as db:
+            op = db.execute(select(operations).where(operations.c.id == op_id)).mappings().one()
+            action = (
+                db.execute(select(grid_actions).where(grid_actions.c.operation_id == op_id)).mappings().one()
+            )
+            if (
+                op["bot_id"] != bot_id
+                or action["bot_id"] != bot_id
+                or op["status"] != "pending"
+                or op["kind"] not in {"grid_initial", "grid_step"}
+                or db.execute(select(orders.c.id).where(orders.c.operation_id == op_id)).first() is not None
+            ):
+                raise ValueError("本次操作已有订单日志或状态不符，请核实原订单，不能自动重试")
+            state = db.execute(select(grid_states).where(grid_states.c.bot_id == bot_id)).mappings().one()
+            if op["kind"] == "grid_initial":
+                if (
+                    state["initialized"]
+                    or db.execute(select(positions).where(positions.c.bot_id == bot_id)).first()
+                ):
+                    raise ValueError("初始化已有确认状态或仓位，不能自动重试")
+                db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
+            elif not state["initialized"]:
+                raise ValueError("原网格尚未确认，不能自动重试")
+            self.finish_operation(op_id, "skipped", f"未创建订单，跳过本次操作：{reason}", db)
+
     def complete_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> None:
         with self.transaction() as db:
             action = (

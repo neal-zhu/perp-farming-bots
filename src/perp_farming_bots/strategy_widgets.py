@@ -11,6 +11,7 @@ from nicegui import ui
 
 from .formatting import grid_capital_text, money, rate, stamp
 from .grid import target_quantity
+from .markets import require_fresh_book
 from .models import Book, Bot, BotState, GridParameters, HedgeParameters, MarginSnapshot, Preview
 from .store import Store, fills
 
@@ -42,8 +43,7 @@ async def observe_strategy(runtime: Runtime, bot: Bot) -> GridMarket | HedgeMark
             book = await runtime.markets.book(
                 runtime.store.connection(bot.parameters.connection_id).provider, bot.parameters.symbol
             )
-            if not book.fresh():
-                raise ValueError("行情已过期")
+            require_fresh_book(book)
         except ValueError as exc:
             book, error = None, str(exc)
         margin, margin_error = None, None
@@ -248,8 +248,15 @@ class GridMonitor(StrategyMonitor):
             and book is not None
             and not outside
         )
-        if pending or bot.state == BotState.ATTENTION or not state["initialized"]:
+        if pending or not state["initialized"]:
             status, explanation = "订单或仓位待确认", bot.reason
+        elif bot.state == BotState.ATTENTION:
+            status = "策略已停止，等待处理"
+            explanation = f"上次停止原因：{bot.reason}（记录更新 {stamp(bot.updated_at)}）。" + (
+                "当前行情可用，核实后点击运行会重新检查账户与原格线。"
+                if book is not None
+                else "当前行情仍不可用，请等待有效行情。"
+            )
         elif bot.state == BotState.PAUSED:
             status, explanation = "已暂停，格线不会触发交易", "保留原仓位和基准格线，点击运行后继续。"
         elif bot.state == BotState.CLOSED:
@@ -260,7 +267,7 @@ class GridMonitor(StrategyMonitor):
         elif not loop_alive(market.last_tick):
             status, explanation = "后台监测状态待确认", "暂时不能确认程序是否持续检查，请查看服务状态。"
         elif book is None:
-            status, explanation = "当前行情不可用", "保留实际格线；页面无法确认触发距离。"
+            status, explanation = "等待有效行情，自动重试", "本次不提交交易；行情恢复后继续检查原格线。"
         elif outside:
             status, explanation = "价格在区间外", "保留仓位，等待回到区间；不在区间外新增策略订单。"
         else:

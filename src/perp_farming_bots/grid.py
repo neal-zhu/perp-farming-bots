@@ -6,6 +6,7 @@ from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
+from .markets import QuoteUnavailable, require_fresh_book
 from .models import Bot, BotCreate, BotState, BotUpdate, GridMarginCapital, GridParameters, StrictModel
 from .store import operations
 
@@ -64,9 +65,6 @@ class Grid:
             r.margin.validate(p, margin)
         connection = r.store.connection(p.connection_id)
         spec = await r.markets.spec(connection.provider, p.symbol)
-        book = await r.markets.book(connection.provider, p.symbol, refresh=True)
-        if not book.fresh():
-            raise ValueError("网格行情已过期")
         low = bounded_price(p.lower_price, spec, "buy")
         high = bounded_price(p.upper_price, spec, "sell")
         levels = [bounded_price(price, spec, "buy") for price in linear(p.grid_count + 1, low, high)]
@@ -93,8 +91,9 @@ class Grid:
                 f"账户可用余额 ${account.available:,.2f}，低于网格资金预算 ${p.collateral_budget:,.2f}。"
                 f"当前格数和区间最低预算 ${minimum_budget_cents:,.2f}；请调整预算或格数。"
             )
-        if not book.fresh():
-            raise ValueError("资金检查期间行情已过期，请重试")
+        # Fetch the quote after funds/ownership checks so their latency cannot age it out.
+        book = await r.markets.book(connection.provider, p.symbol, refresh=True)
+        require_fresh_book(book)
         midpoint = (book.asks[0].price + book.bids[0].price) / 2
         cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
         return GridPreview(
@@ -127,7 +126,7 @@ class Grid:
                 await r.margin.configure(bot)
                 r.store.restart_closed_bot(bot.id)
                 return
-            if bot.state not in {BotState.READY, BotState.PAUSED}:
+            if bot.state not in {BotState.READY, BotState.PAUSED, BotState.ATTENTION}:
                 raise ValueError("当前状态无法运行网格，请先核实订单和持仓")
             r.store.check_grid_reservation(bot)
             await r._check_inventory(p.connection_id, p.symbol)
@@ -139,6 +138,9 @@ class Grid:
                     raise ValueError("网格成交数量未达到原目标；请平仓后新建 Bot，不会补单")
                 if isinstance(p.capital, GridMarginCapital):
                     await r.margin.verify(p)
+                require_fresh_book(
+                    await r.markets.book(r.store.connection(p.connection_id).provider, p.symbol, refresh=True)
+                )
                 r.store.set_state(bot.id, BotState.HOLDING, "网格已恢复，继续等待原相邻格线")
             else:
                 await self.preview(bot)
@@ -198,8 +200,7 @@ class Grid:
                     book = await r.markets.book(
                         r.store.connection(p.connection_id).provider, p.symbol, refresh=True
                     )
-                    if not book.fresh():
-                        raise ValueError("网格行情已过期")
+                    require_fresh_book(book)
                     midpoint = (book.bids[0].price + book.asks[0].price) / 2
                     if not levels[0] <= midpoint <= levels[-1]:
                         r.store.set_state(
@@ -224,14 +225,16 @@ class Grid:
                     delta
                 ) * p.upper_price / (p.capital.leverage if isinstance(p.capital, GridMarginCapital) else 1):
                     raise ValueError("可用抵押资产不足以覆盖本格订单")
-                op_id = r.store.begin_grid_action(bot.id, cursor, target, layout=layout)
                 if delta:
                     side: Literal["buy", "sell"] = "buy" if delta > 0 else "sell"
                     role = "long" if (current > 0 if reduce else delta > 0) else "short"
                     book = await r.markets.book(
                         r.store.connection(p.connection_id).provider, p.symbol, refresh=True
                     )
+                    require_fresh_book(book)
                     reference = book.vwap(side, abs(delta))
+                op_id = r.store.begin_grid_action(bot.id, cursor, target, layout=layout)
+                if delta:
                     result = await r._execute(
                         bot,
                         op_id,
@@ -248,15 +251,29 @@ class Grid:
                         raise ValueError("本格订单未完全成交；保留实际仓位，停止后续动作，请平仓处理")
                 r.store.complete_grid_action(bot.id, op_id)
                 return True
-            except Exception as exc:
-                message = str(exc) if isinstance(exc, ValueError) else "网格执行失败，请核实原订单"
+            except QuoteUnavailable as exc:
                 if op_id is not None:
-                    r.store.finish_operation(
-                        op_id, "unknown" if r._unresolved(bot.id) else "attention", message
-                    )
-                r.store.set_state(bot.id, BotState.ATTENTION, message)
-                r.store.alert(message, bot.id, "error")
+                    try:
+                        r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
+                    except ValueError as guard_error:
+                        self._fail(bot.id, op_id, guard_error)
+                        return False
+                r.store.set_state(bot.id, bot.state, f"行情暂不可用，等待下一次更新：{exc}")
+                r.store.alert(
+                    f"{bot.name}：行情暂不可用，跳过本次交易；恢复后继续检查原网格", bot.id, "warning"
+                )
                 return False
+            except Exception as exc:
+                self._fail(bot.id, op_id, exc)
+                return False
+
+    def _fail(self, bot_id: str, op_id: str | None, exc: Exception) -> None:
+        r = self.runtime
+        message = str(exc) if isinstance(exc, ValueError) else "网格执行失败，请核实原订单"
+        if op_id is not None:
+            r.store.finish_operation(op_id, "unknown" if r._unresolved(bot_id) else "attention", message)
+        r.store.set_state(bot_id, BotState.ATTENTION, message)
+        r.store.alert(message, bot_id, "error")
 
     def finish_sync(self, bot_id: str) -> None:
         r = self.runtime

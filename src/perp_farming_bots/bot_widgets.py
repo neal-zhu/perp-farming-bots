@@ -359,7 +359,11 @@ class GridBotCard(BotCard):
             f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · {grid_capital_text(p)} · 滑点上限 {rate(p.slippage_bps / 100)}"
         )
         self.realized.set_text(f"已实现价格盈亏 {pnl_money(pnl['realized'])}")
-        self.reason.set_text(f"状态说明：{bot.reason}")
+        self.reason.set_text(
+            f"上次停止原因：{bot.reason} · 记录更新 {stamp(bot.updated_at)}"
+            if bot.state == BotState.ATTENTION
+            else f"状态说明：{bot.reason}"
+        )
         schedule = "价格触发 · 需程序在线 · 运行后按当前价格建立初始仓位"
         if state is not None:
             levels, cursor = state["levels"], state["cursor"]
@@ -394,7 +398,9 @@ class GridBotCard(BotCard):
         received.set_visibility(data["status"] == "available")
         self.notice.set_visibility(bot.state == BotState.ATTENTION or pending)
         self.exposure.set_text(
-            bot.reason if bot.state == BotState.ATTENTION else "原订单正在确认，已停止新动作。"
+            f"上次停止原因：{bot.reason} · 记录更新 {stamp(bot.updated_at)}"
+            if bot.state == BotState.ATTENTION
+            else "原订单正在确认，已停止新动作。"
         )
         self.match.set_text(
             "待确认"
@@ -418,7 +424,10 @@ class GridBotCard(BotCard):
         can_restart = bot.state == BotState.CLOSED and not positions and not pending
         self.buttons["run"].set_text("重新运行" if bot.state == BotState.CLOSED else "运行")
         self.buttons["run"].set_enabled(
-            can_restart or bot.state in {BotState.READY, BotState.PAUSED} and not pending and aligned
+            can_restart
+            or bot.state in {BotState.READY, BotState.PAUSED, BotState.ATTENTION}
+            and not pending
+            and aligned
         )
         self.buttons["pause"].set_enabled(
             bot.state in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION} and not pending

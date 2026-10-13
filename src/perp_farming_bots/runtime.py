@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from .grid import Grid, GridPreview
 from .margin import Margin
-from .markets import Markets, VenueRequestError
+from .markets import Markets, VenueRequestError, require_fresh_book
 from .models import (
     Bot,
     BotCreate,
@@ -355,7 +355,9 @@ class Runtime:
         if quantity_floor(quantity, spec.quantity_step) != quantity:
             raise ValueError("实际数量不符合该交易所精度，请在交易所处理残余数量")
         book = await self.markets.book(account.provider, bot.parameters.symbol, refresh=True)
-        if not book.fresh():
+        if grid_bounds is not None:
+            require_fresh_book(book)
+        elif not book.fresh():
             raise ValueError("盘口已过期")
         if grid_bounds is not None:
             midpoint = (book.bids[0].price + book.asks[0].price) / 2
