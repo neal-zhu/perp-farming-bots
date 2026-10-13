@@ -18,6 +18,7 @@ MAX_AGE_SECONDS = 300
 ARCUS_POINTS_URL = "https://app.arcus.xyz/rewards"
 LIGHTER_POINTS_URL = "https://app.lighter.xyz/referrals"
 RH_POINTS_URL = "https://robinhoodchain.lighter.xyz/leaderboard"
+HISTORY_RANGES = {"24h": 86400, "7d": 604800, "30d": 2592000}
 
 
 class PointMetric(StrictModel):
@@ -176,6 +177,18 @@ class Points:
     def listing(self) -> list[dict[str, Any]]:
         return [snapshot.model_dump(mode="json") for snapshot in self.views()]
 
+    def history(self, connection_id: str, period: str = "24h") -> dict[str, Any]:
+        if period not in HISTORY_RANGES:
+            raise ValueError("积分历史范围仅支持 24h、7d、30d")
+        connection = self.store.connection(connection_id)
+        since = time.time() - HISTORY_RANGES[period]
+        return {
+            "scope_id": scope_id(connection),
+            "period": period,
+            "since": since,
+            "samples": self.store.points_history(scope_id(connection), since),
+        }
+
     async def start(self) -> None:
         self.task = asyncio.create_task(self.run())
 
@@ -255,7 +268,12 @@ class Points:
                 for metric in snapshot.metrics:
                     metric.reason = self.failure(exc)
             self.snapshots[key] = snapshot
-            self.checked[key] = time.time()
+            sampled_at = time.time()
+            for metric in snapshot.metrics:
+                self.store.save_point_sample(
+                    key, metric.key, sampled_at, metric.status, metric.value, metric.reason, metric.source
+                )
+            self.checked[key] = sampled_at
             return self.view(connection_id)
 
     @staticmethod

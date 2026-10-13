@@ -61,7 +61,7 @@ async def test_arcus_fraction_is_converted_to_hourly_percent_and_failure_never_r
 
 
 @pytest.mark.parametrize("provider", [Provider.LIGHTER, Provider.LIGHTER_RH])
-@pytest.mark.parametrize("invalid", [None, "wrong-market", "stale"])
+@pytest.mark.parametrize("invalid", [None, "wrong-market", "stale", "future"])
 async def test_lighter_native_stream_uses_percent_and_checks_identity_and_timestamp(
     monkeypatch, provider, invalid
 ):
@@ -70,7 +70,7 @@ async def test_lighter_native_stream_uses_percent_and_checks_identity_and_timest
     now = time.time()
     message = {
         "channel": "market_stats:1",
-        "timestamp": int((now - (120 if invalid == "stale" else 0)) * 1000),
+        "timestamp": int((now + {"stale": -120, "future": 120}.get(invalid, 0)) * 1000),
         "market_stats": {
             "market_id": 1,
             "symbol": "ETH" if invalid == "wrong-market" else "BTC",
@@ -101,11 +101,57 @@ async def test_lighter_native_stream_uses_percent_and_checks_identity_and_timest
     if invalid:
         assert result.status == "unavailable"
         assert result.predicted_rate_pct is result.last_rate_pct is None
+        if invalid == "stale":
+            assert result.unavailable_reason == "资金费率数据已过期"
+        elif invalid == "future":
+            assert result.unavailable_reason == "资金费率时间戳异常：交易所时间领先本机超过 5 秒"
     else:
         assert result.predicted_rate_pct == Decimal("0.0012")
         assert result.last_rate_pct == Decimal("-0.0006")
         assert result.next_payment_at == int(now - 100) + 3600
     await markets.close()
+
+
+@pytest.mark.parametrize("provider", [Provider.LIGHTER, Provider.LIGHTER_RH])
+async def test_lighter_fresh_snapshot_allows_small_upstream_clock_lead(monkeypatch, provider):
+    # Live Core and RH snapshots led the receiving machine by about 70 ms.
+    # Replay that native pattern with a fixed clock, without network timing.
+    now = 1791812667.100
+    monkeypatch.setattr(markets_module.time, "time", lambda: now)
+    markets = Markets()
+    monkeypatch.setattr(markets, "spec", AsyncMock(return_value=spec(provider)))
+    message = {
+        "type": "subscribed/market_stats",
+        "channel": "market_stats:1",
+        "timestamp": 1791812667173,
+        "market_stats": {
+            "market_id": 1,
+            "symbol": "BTC",
+            "current_funding_rate": "0.0012",
+            "funding_rate": "0.0012",
+            "funding_timestamp": 1791810000000,
+        },
+    }
+
+    class Socket:
+        send = AsyncMock()
+
+        async def __aiter__(self):
+            yield json.dumps(message)
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        yield Socket()
+
+    monkeypatch.setattr(markets_module, "connect", connect)
+    try:
+        result = await markets.funding(provider, "BTC")
+        assert result.status == "available", result.unavailable_reason
+        assert result.predicted_rate_pct == Decimal("0.0012")
+        assert result.last_rate_pct == Decimal("0.0012")
+        assert result.next_payment_at == 1791813600
+    finally:
+        await markets.close()
 
 
 async def test_net_funding_is_short_minus_long_and_unknown_leg_prevents_estimate(env, monkeypatch):

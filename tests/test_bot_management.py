@@ -9,6 +9,7 @@ from test_account_form import page as page
 from test_runtime import make_bot, open_bot
 
 from perp_farming_bots.api import register_routes
+from perp_farming_bots.bot_widgets import BotCard
 from perp_farming_bots.models import BotState, BotUpdate, HedgeParameters
 from perp_farming_bots.notifications import Notifications
 from perp_farming_bots.store import fills
@@ -147,8 +148,9 @@ async def test_bot_empty_name_is_inline_and_delete_requires_confirmation(bot_pag
 
 def test_bot_card_explains_funding_payment_directions(bot_page):
     labels = [e.text for e in bot_page.elements.values() if isinstance(e, ui.label)]
-    assert "+0.001200% / 1小时 · 预计支付" in labels
-    assert "+0.001200% / 1小时 · 预计收取" in labels
+    assert "预计支付 0.0012%" in labels
+    assert "预计收取 0.0012%" in labels
+    assert "每小时" in labels
     assert any("实际资金费尚未计入 Bot 盈亏" in s for s in labels)
 
 
@@ -176,6 +178,61 @@ async def test_periodic_updates_change_status_values_in_place(bot_page, configur
     start = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "运行")
     pause = next(e for e in bot_page.elements.values() if isinstance(e, ui.button) and e.text == "暂停")
     assert start.visible and not start.enabled and pause.visible and pause.enabled
+
+
+async def test_bot_summary_shows_fee_deduction_and_explicit_unknown_without_resetting_details(
+    bot_page, configured_bot, env
+):
+    store, runtime, _, _ = env
+    with bot_page:
+        card = BotCard(configured_bot.id, *([lambda *args: None] * 5))
+    pnl, funding = await runtime.pnl(configured_bot.id), await runtime.funding(configured_bot.id)
+    pnl.update(gross="-0.004", net="-0.026", fees="0.022")
+    card.update(configured_bot, store, pnl, funding)
+    assert card.pnl["net"].text == "−$0.03"
+    assert card.pnl["gross"].text == "$0.00"
+    assert card.pnl["fees"].text == "$0.02"
+    card.details.set_value(True)
+    old_ids = set(bot_page.elements)
+    pnl.update(net=None, fees=None, unavailable_reason="费用等待确认")
+    card.update(configured_bot, store, pnl, funding)
+    assert card.pnl["net"].text == card.pnl["fees"].text == "待确认"
+    assert card.details.value is True and set(bot_page.elements) == old_ids
+
+
+async def test_bot_card_keeps_unavailable_funding_visible(bot_page, configured_bot, env):
+    store, runtime, _, _ = env
+    with bot_page:
+        card = BotCard(configured_bot.id, *([lambda *args: None] * 5))
+    pnl, funding = await runtime.pnl(configured_bot.id), await runtime.funding(configured_bot.id)
+    for role in ["long", "short"]:
+        funding[role].update(
+            status="unavailable",
+            predicted_rate_pct=None,
+            last_rate_pct=None,
+            received_at=None,
+            next_payment_at=None,
+            unavailable_reason="官方费率读取失败",
+        )
+    funding["net_receipt_rate_pct"] = None
+    card.update(configured_bot, store, pnl, funding)
+    assert all(leg.funding.text == "暂不可用" for leg in card.legs.values())
+    assert card.net_funding.text == "暂不可用" and card.net_funding.visible
+
+
+async def test_pending_orders_do_not_present_confirmed_volume_as_complete_total(
+    bot_page, configured_bot, env
+):
+    store, runtime, _, _ = env
+    store.operation(configured_bot.id, "open")
+    with bot_page:
+        card = BotCard(configured_bot.id, *([lambda *args: None] * 5))
+    card.update(
+        configured_bot, store, await runtime.pnl(configured_bot.id), await runtime.funding(configured_bot.id)
+    )
+    assert card.turnover.text == "待确认"
+    assert "累计已确认成交额 $0.00" in card.confirmed_turnover.text
+    assert "未确认订单尚未计入" in card.confirmed_turnover.text
 
 
 async def test_alert_polling_keeps_telegram_draft_and_existing_alert_nodes(bot_page, env):

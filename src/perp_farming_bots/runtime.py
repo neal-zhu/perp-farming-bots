@@ -110,6 +110,8 @@ class Runtime:
                             await self.sync(bot.id)
                         elif bot.state == BotState.WAITING:
                             await self.try_open(bot.id)
+                        elif bot.state == BotState.HOLDING:
+                            await self.try_reopen(bot.id)
                     except Exception as exc:
                         message = str(exc) if isinstance(exc, ValueError) else "策略执行异常，请检查日志"
                         self.store.alert(message, bot.id, "error")
@@ -245,9 +247,10 @@ class Runtime:
                     for position in owned:
                         await self._check_inventory(position.connection_id, position.symbol)
                     self.store.set_state(bot_id, BotState.HOLDING, "策略运行中；保留已确认持仓")
+                    self.store.arm_reopen(bot_id)
                 else:
-                    if self.store.bot_orders(bot_id):
-                        raise ValueError("此 Bot 已执行过交易且无持仓，请新建 Bot")
+                    if self.store.cycle(bot_id)["open_operation_id"] is not None:
+                        raise ValueError("本轮已执行过建仓且无持仓，请先核实原订单")
                     await self.preview(bot)
                     for connection_id in [
                         bot.parameters.long_connection_id,
@@ -262,8 +265,19 @@ class Runtime:
                 if self.store.bot_pending(bot_id):
                     raise ValueError("有未确认订单或操作，请先同步；策略已停止新动作")
                 self.store.set_state(bot_id, BotState.PAUSED, "策略已暂停；持仓保留，点击运行可继续")
+                self.store.disarm_reopen(bot_id)
             elif action == "close":
-                await self._close(bot)
+                self.store.disarm_reopen(bot_id)
+                if (
+                    not self.store.positions(bot_id)
+                    and self.store.cycle(bot_id)["number"] > 1
+                    and bot.state in {BotState.WAITING, BotState.PAUSED}
+                ):
+                    if self.store.bot_pending(bot_id):
+                        raise ValueError("有未确认订单，请先同步订单")
+                    self.store.set_state(bot_id, BotState.CLOSED, "无持仓，已结束重开等待")
+                else:
+                    await self._close(bot)
             else:
                 raise ValueError("未知 Bot 操作")
 
@@ -350,8 +364,20 @@ class Runtime:
             bot = self.store.bot(bot_id)
             if bot.state != BotState.WAITING:
                 return False
-            if self.store.bot_orders(bot_id) or self.store.positions(bot_id):
+            if (
+                self.store.cycle(bot_id)["open_operation_id"] is not None
+                or self.store.positions(bot_id)
+                or self.store.bot_pending(bot_id)
+            ):
                 self.store.set_state(bot_id, BotState.ATTENTION, "已有执行记录，禁止重复建仓")
+                return False
+            not_before = self.store.cycle(bot_id)["entry_not_before"]
+            if not_before is not None and time.time() < not_before:
+                self.store.set_state(
+                    bot_id,
+                    BotState.WAITING,
+                    f"随机等待中，{math.ceil(not_before - time.time())} 秒后开始检查价差",
+                )
                 return False
             try:
                 preview = await self.preview(bot)
@@ -403,32 +429,53 @@ class Runtime:
                 self.store.set_state(bot.id, BotState.ATTENTION, message)
                 self.store.alert(message, bot.id, "error")
                 return False
-            self.store.finish_operation(op_id, "completed", "两腿原生成交已确认")
-            self.store.set_state(
+            self.store.complete_open(
                 bot.id,
-                BotState.HOLDING,
+                op_id,
                 f"两腿已建仓 {first.quantity} {bot.parameters.symbol} / 目标 {preview.quantity}；不自动追加",
             )
             self.store.alert(f"{bot.name} 建仓完成", bot.id)
             return True
 
-    async def _close(self, bot: Bot) -> None:
+    async def try_reopen(self, bot_id: str) -> bool:
+        async with self.guard:
+            bot = self.store.bot(bot_id)
+            due = self.store.cycle(bot_id)["next_reopen_at"]
+            if (
+                bot.state != BotState.HOLDING
+                or bot.parameters.reopen_interval_seconds is None
+                or due is None
+                or time.time() < due
+            ):
+                return False
+            owned = self.store.positions(bot_id)
+            if self.store.bot_pending(bot_id) or len(owned) != 2 or owned[0].quantity != owned[1].quantity:
+                self.store.disarm_reopen(bot_id)
+                self.store.set_state(
+                    bot_id, BotState.ATTENTION, "定期重开前订单或双腿持仓未确认，已停止自动动作"
+                )
+                self.store.alert("定期重开前订单或双腿持仓未确认，已停止自动动作", bot_id, "error")
+                return False
+            await self._close(bot, reopen=True)
+            return self.store.bot(bot_id).state == BotState.WAITING
+
+    async def _close(self, bot: Bot, *, reopen: bool = False) -> None:
         if self._unresolved(bot.id):
             raise ValueError("有未确认订单，请先同步订单")
         allocated = self.store.positions(bot.id)
         if not allocated:
             raise ValueError("此 Bot 没有已分配持仓，无需平仓")
-        for p in allocated:
-            await self._check_inventory(p.connection_id, p.symbol)
-        references = {}
-        for p in allocated:
-            account = self.store.connection(p.connection_id)
-            book = await self.markets.book(account.provider, p.symbol, refresh=True)
-            if not book.fresh():
-                raise ValueError("平仓报价已过期")
-            references[p.role] = book.vwap("sell" if p.role == "long" else "buy", p.quantity)
-        op_id = self.store.operation(bot.id, "close")
+        op_id = self.store.operation(bot.id, "reopen_close" if reopen else "close")
         try:
+            for p in allocated:
+                await self._check_inventory(p.connection_id, p.symbol)
+            references = {}
+            for p in allocated:
+                account = self.store.connection(p.connection_id)
+                book = await self.markets.book(account.provider, p.symbol, refresh=True)
+                if not book.fresh():
+                    raise ValueError("平仓报价已过期")
+                references[p.role] = book.vwap("sell" if p.role == "long" else "buy", p.quantity)
             for p in allocated:
                 await self._execute(
                     bot,
@@ -448,14 +495,22 @@ class Runtime:
                 op_id, "unknown" if self._unresolved(bot.id) else "attention", message
             )
             self.store.set_state(bot.id, BotState.ATTENTION, message)
+            self.store.disarm_reopen(bot.id)
             self.store.alert(message, bot.id, "error")
             return
-        self.store.finish_operation(op_id, "completed", "此 Bot 的分配数量已确认平仓")
-        self.store.set_state(bot.id, BotState.CLOSED, "平仓完成")
-        self.store.alert(f"{bot.name} 平仓完成", bot.id)
+        if reopen:
+            wait = secrets.randbelow(bot.parameters.reopen_random_wait_seconds + 1)
+            self.store.complete_reopen_close(bot.id, op_id, wait)
+            self.store.alert(f"{bot.name} 定期平仓完成，等待下一轮价差条件", bot.id)
+        else:
+            self.store.finish_operation(op_id, "completed", "此 Bot 的分配数量已确认平仓")
+            self.store.set_state(bot.id, BotState.CLOSED, "平仓完成")
+            self.store.alert(f"{bot.name} 平仓完成", bot.id)
 
     async def sync(self, bot_id: str) -> None:
         async with self.guard:
+            if self.store.bot(bot_id).state != BotState.ATTENTION and not self.store.bot_pending(bot_id):
+                return
             for order in self.store.bot_orders(bot_id):
                 if order["status"] not in UNRESOLVED:
                     continue
@@ -473,16 +528,16 @@ class Runtime:
             if not ops:
                 return
             latest = ops[0]
-            if latest["kind"] == "close" and not inventory:
+            if latest["kind"] in {"close", "reopen_close"} and not inventory:
                 self.store.set_state(bot_id, BotState.CLOSED, "原平仓订单已确认完成")
                 self.store.finish_operation(latest["id"], "completed", "原平仓订单已确认")
+                self.store.disarm_reopen(bot_id)
             elif (
                 latest["kind"] == "open"
                 and len(inventory) == 2
                 and inventory[0].quantity == inventory[1].quantity
             ):
-                self.store.set_state(bot_id, BotState.HOLDING, "原建仓订单已确认完成")
-                self.store.finish_operation(latest["id"], "completed", "原建仓订单已确认")
+                self.store.complete_open(bot_id, latest["id"], "原建仓订单已确认完成")
             else:
                 if not inventory:
                     message = "订单已同步，没有已分配持仓；请查看原订单结果"

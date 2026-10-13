@@ -104,6 +104,8 @@ class HedgeParameters(StrictModel):
     threshold_pct: Decimal = Field(ge=Decimal("-10"), le=Decimal("100"))
     target_usd: Decimal = Field(gt=0, le=Decimal("1000000"))
     slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
+    reopen_interval_seconds: int | None = Field(default=None, ge=60, le=2592000)
+    reopen_random_wait_seconds: int = Field(default=300, ge=0, le=300)
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -310,7 +312,7 @@ STRATEGIES: list[StrategyDefinition] = [
         "id": "spread_hedging",
         "name": "跨账户价差对冲",
         "available": True,
-        "description": "两个账户、一个币种，价差达到条件后建仓；支持同一交易所的不同账户。",
+        "description": "两个账户、一个币种，价差达到条件后建仓；可设置持仓间隔，定期平仓后再次等待价差。",
     },
     {
         "id": "grid",

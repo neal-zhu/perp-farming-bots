@@ -51,7 +51,7 @@ async def test_schema_two_stopped_bots_migrate_explicitly_without_changing_inven
     bot = await open_bot(store, runtime, a, b)
     original = store.positions(bot.id)
     if uncertain:
-        store.operation(bot.id, "open")
+        store.operation(bot.id, "close")
     path = Path(store.engine.url.database)
     with store.transaction() as db:
         db.execute(update(bots).where(bots.c.id == bot.id).values(state="stopped"))
@@ -64,7 +64,7 @@ async def test_schema_two_stopped_bots_migrate_explicitly_without_changing_inven
         assert migrated.positions(bot.id) == original
         assert len(runtime.accounts.adapter(a.id).sent) == 1
         with migrated.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 3
+            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 4
     finally:
         migrated.close()
 

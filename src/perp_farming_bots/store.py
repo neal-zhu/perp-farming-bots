@@ -20,6 +20,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     insert,
+    literal_column,
     select,
     update,
 )
@@ -139,6 +140,30 @@ orders = Table(
     UniqueConstraint("operation_id", "role"),
 )
 
+bot_cycles = Table(
+    "bot_cycles",
+    metadata,
+    Column("bot_id", String, primary_key=True),
+    Column("number", Integer, nullable=False),
+    Column("open_operation_id", String, nullable=True),
+    Column("opened_at", Float, nullable=True),
+    Column("next_reopen_at", Float, nullable=True),
+    Column("entry_not_before", Float, nullable=True),
+)
+point_samples = Table(
+    "point_samples",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scope_id", String, nullable=False, index=True),
+    Column("metric", String, nullable=False),
+    Column("sampled_at", Float, nullable=False),
+    Column("status", String, nullable=False),
+    Column("value", String, nullable=True),
+    Column("reason", Text, nullable=True),
+    Column("source", String, nullable=False),
+    UniqueConstraint("scope_id", "metric", "sampled_at"),
+)
+
 
 class Store:
     """Account identities and durable native-order journals in a single-process SQLite store."""
@@ -148,10 +173,45 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 2, 3}:
+            if version not in {0, 2, 3, 4}:
                 raise ValueError(f"Unsupported database schema version {version}")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
+            if version < 4:
+                for row in db.execute(select(bots)).mappings():
+                    parameters = json.loads(row["parameters"])
+                    if "reopen_interval_seconds" not in parameters:
+                        parameters["reopen_interval_seconds"] = None
+                    if "reopen_random_wait_seconds" not in parameters:
+                        parameters["reopen_random_wait_seconds"] = 300
+                    db.execute(
+                        update(bots).where(bots.c.id == row["id"]).values(parameters=json.dumps(parameters))
+                    )
+                    latest_open = (
+                        db.execute(
+                            select(operations)
+                            .where(operations.c.bot_id == row["id"], operations.c.kind == "open")
+                            .order_by(operations.c.created_at.desc(), literal_column("rowid").desc())
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    existing_cycle = db.execute(
+                        select(bot_cycles.c.bot_id).where(bot_cycles.c.bot_id == row["id"])
+                    ).first()
+                    if existing_cycle is None:
+                        db.execute(
+                            insert(bot_cycles).values(
+                                bot_id=row["id"],
+                                number=1,
+                                open_operation_id=latest_open["id"] if latest_open else None,
+                                opened_at=latest_open["updated_at"]
+                                if latest_open and latest_open["status"] == "completed"
+                                else None,
+                                next_reopen_at=None,
+                                entry_not_before=None,
+                            )
+                        )
             if version == 2:
                 # Explicit lifecycle migration; never decode old stop states
                 # through an alias, and never start a strategy during migration.
@@ -174,7 +234,7 @@ class Store:
                             updated_at=time.time(),
                         )
                     )
-            db.exec_driver_sql("PRAGMA user_version=3")
+            db.exec_driver_sql("PRAGMA user_version=4")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -269,6 +329,16 @@ class Store:
                     raise ValueError("相同创建请求 ID 不能用于不同 Bot 参数")
                 return previous
             db.execute(insert(bots).values(**record))
+            db.execute(
+                insert(bot_cycles).values(
+                    bot_id=bot.id,
+                    number=1,
+                    open_operation_id=None,
+                    opened_at=None,
+                    next_reopen_at=None,
+                    entry_not_before=None,
+                )
+            )
         return bot
 
     @staticmethod
@@ -327,6 +397,7 @@ class Store:
             and not self.bot_orders(bot_id)
             and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED},
             "slippage": not pending and bot.state != BotState.ATTENTION,
+            "reopen": not pending and bot.state != BotState.ATTENTION,
             "delete": not pending
             and not self.positions(bot_id)
             and bot.state in {BotState.READY, BotState.PAUSED, BotState.CLOSED},
@@ -335,7 +406,11 @@ class Store:
     def update_bot(self, bot_id: str, value: BotUpdate) -> Bot:
         bot = self.bot(bot_id)
         editable = self.bot_editability(bot_id)
-        entry_fields = set(type(value.parameters).model_fields) - {"slippage_bps"}
+        entry_fields = set(type(value.parameters).model_fields) - {
+            "slippage_bps",
+            "reopen_interval_seconds",
+            "reopen_random_wait_seconds",
+        }
         if value.parameters.model_dump(include=entry_fields) != bot.parameters.model_dump(
             include=entry_fields
         ):
@@ -343,6 +418,12 @@ class Store:
                 raise ValueError("已有订单或持仓，不能修改账户、币种、建仓金额或价差条件；请新建 Bot")
         if value.parameters.slippage_bps != bot.parameters.slippage_bps and not editable["slippage"]:
             raise ValueError("有未确认订单或需要处理的状态，不能修改滑点；请先同步并处理")
+        interval_changed = value.parameters.reopen_interval_seconds != bot.parameters.reopen_interval_seconds
+        if (
+            interval_changed
+            or value.parameters.reopen_random_wait_seconds != bot.parameters.reopen_random_wait_seconds
+        ) and not editable["reopen"]:
+            raise ValueError("有未确认订单或需要处理的状态，不能修改定期重开；请先同步并处理")
         self.connection(value.parameters.long_connection_id)
         self.connection(value.parameters.short_connection_id)
         values: dict[str, Any] = {
@@ -355,6 +436,17 @@ class Store:
                 values.update(state=BotState.READY.value, reason="参数已修改，请重新点击运行")
         with self.transaction() as db:
             db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
+            if interval_changed:
+                interval = value.parameters.reopen_interval_seconds
+                db.execute(
+                    update(bot_cycles)
+                    .where(bot_cycles.c.bot_id == bot_id)
+                    .values(
+                        next_reopen_at=time.time() + interval
+                        if interval is not None and bot.state == BotState.HOLDING
+                        else None
+                    )
+                )
         return self.bot(bot_id)
 
     def positions(self, bot_id: str | None = None) -> list[Position]:
@@ -369,12 +461,142 @@ class Store:
         if bot_id is not None:
             query = query.where(table.c.bot_id == bot_id)
         with self.engine.connect() as db:
-            return [dict(row) for row in db.execute(query.order_by(table.c.created_at.desc())).mappings()]
+            return [
+                dict(row)
+                for row in db.execute(
+                    query.order_by(table.c.created_at.desc(), literal_column("rowid").desc())
+                ).mappings()
+            ]
+
+    def cycle(self, bot_id: str) -> dict[str, Any]:
+        with self.engine.connect() as db:
+            return dict(db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one())
+
+    def arm_reopen(self, bot_id: str) -> None:
+        interval = self.bot(bot_id).parameters.reopen_interval_seconds
+        now = time.time()
+        values: dict[str, Any] = {"next_reopen_at": now + interval if interval is not None else None}
+        with self.transaction() as db:
+            db.execute(update(bot_cycles).where(bot_cycles.c.bot_id == bot_id).values(**values))
+
+    def complete_open(self, bot_id: str, op_id: str, reason: str) -> None:
+        interval = self.bot(bot_id).parameters.reopen_interval_seconds
+        now = time.time()
+        with self.transaction() as db:
+            cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
+            if cycle["open_operation_id"] != op_id:
+                raise ValueError("本轮建仓操作身份不匹配")
+            self.finish_operation(op_id, "completed", "两腿原生成交已确认", db)
+            self.set_state(bot_id, BotState.HOLDING, reason, db)
+            db.execute(
+                update(bot_cycles)
+                .where(bot_cycles.c.bot_id == bot_id)
+                .values(opened_at=now, next_reopen_at=now + interval if interval is not None else None)
+            )
+
+    def disarm_reopen(self, bot_id: str) -> None:
+        with self.transaction() as db:
+            db.execute(update(bot_cycles).where(bot_cycles.c.bot_id == bot_id).values(next_reopen_at=None))
+
+    def complete_reopen_close(self, bot_id: str, op_id: str, wait_seconds: int) -> None:
+        if not 0 <= wait_seconds <= self.bot(bot_id).parameters.reopen_random_wait_seconds:
+            raise ValueError("随机等待超出设置上限")
+        unresolved = any(
+            not row["applied"] or row["status"] in {"prepared", "submitting", "submitted", "unknown"}
+            for row in self.bot_orders(bot_id)
+        ) or any(
+            row["id"] != op_id and row["status"] in {"pending", "unknown"}
+            for row in self.rows(operations, bot_id)
+        )
+        if self.positions(bot_id) or unresolved:
+            raise ValueError("定期平仓尚未确认，不能开始下一轮")
+        with self.transaction() as db:
+            operation = db.execute(select(operations).where(operations.c.id == op_id)).mappings().one()
+            if (
+                operation["bot_id"] != bot_id
+                or operation["kind"] != "reopen_close"
+                or operation["status"] != "pending"
+            ):
+                raise ValueError("定期平仓操作身份或状态无效")
+            self.finish_operation(op_id, "completed", "定期平仓已确认，开始下一轮等待", db)
+            db.execute(
+                update(bot_cycles)
+                .where(bot_cycles.c.bot_id == bot_id)
+                .values(
+                    number=bot_cycles.c.number + 1,
+                    open_operation_id=None,
+                    opened_at=None,
+                    next_reopen_at=None,
+                    entry_not_before=time.time() + wait_seconds,
+                )
+            )
+            self.set_state(
+                bot_id, BotState.WAITING, f"定期平仓已确认，随机等待 {wait_seconds} 秒后按价差条件建仓", db
+            )
+
+    def turnover(self, bot_id: str) -> dict[str, Any]:
+        value = sum(
+            (Decimal(row["quantity"]) * Decimal(row["price"]) for row in self.rows(fills, bot_id)), Decimal(0)
+        )
+        return {"confirmed_usd": str(value), "has_unconfirmed_orders": self.bot_pending(bot_id)}
+
+    def save_point_sample(
+        self,
+        scope_id: str,
+        metric: str,
+        sampled_at: float,
+        status: str,
+        value: Decimal | None,
+        reason: str | None,
+        source: str,
+    ) -> None:
+        if (
+            status not in {"available", "unavailable"}
+            or (status == "available") != (value is not None)
+            or (
+                status == "available"
+                and (reason is not None or value is None or not value.is_finite() or value < 0)
+            )
+            or (status == "unavailable" and not reason)
+        ):
+            raise ValueError("积分采样状态与数值不一致")
+        with self.transaction() as db:
+            db.execute(
+                insert(point_samples).values(
+                    scope_id=scope_id,
+                    metric=metric,
+                    sampled_at=sampled_at,
+                    status=status,
+                    value=str(value) if value is not None else None,
+                    reason=reason,
+                    source=source,
+                )
+            )
+
+    def points_history(self, scope_id: str, since: float) -> list[dict[str, Any]]:
+        with self.engine.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    select(point_samples)
+                    .where(point_samples.c.scope_id == scope_id, point_samples.c.sampled_at >= since)
+                    .order_by(point_samples.c.sampled_at, point_samples.c.id)
+                ).mappings()
+            ]
 
     def operation(self, bot_id: str, kind: str) -> str:
         op_id = uuid.uuid4().hex
         now = time.time()
         with self.transaction() as db:
+            if kind == "open":
+                cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
+                if cycle["open_operation_id"] is not None:
+                    raise ValueError("本轮已有建仓操作，禁止重复提交")
+                db.execute(
+                    update(bot_cycles)
+                    .where(bot_cycles.c.bot_id == bot_id)
+                    .values(open_operation_id=op_id, entry_not_before=None)
+                )
             db.execute(
                 insert(operations).values(
                     id=op_id,
@@ -494,7 +716,10 @@ class Store:
                     )
                     db.execute(update(fills).where(fills.c.id == order_id).values(fee=str(result.fee)))
                     intent = OrderIntent.model_validate_json(row["intent"])
-                    if not intent.reduce_only:
+                    current_open = db.execute(
+                        select(bot_cycles.c.open_operation_id).where(bot_cycles.c.bot_id == row["bot_id"])
+                    ).scalar_one_or_none()
+                    if not intent.reduce_only and current_open == row["operation_id"]:
                         db.execute(
                             update(positions)
                             .where((positions.c.bot_id == row["bot_id"]) & (positions.c.role == row["role"]))

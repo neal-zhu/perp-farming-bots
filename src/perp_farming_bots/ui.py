@@ -9,6 +9,7 @@ from nicegui import ui
 from nicegui.elements.mixins.disableable_element import DisableableElement
 from pydantic import SecretStr, ValidationError
 
+from .bot_styles import BOT_STYLES
 from .bot_widgets import AlertFeed, BotCard
 from .formatting import money, stamp
 from .models import (
@@ -16,6 +17,7 @@ from .models import (
     STRATEGIES,
     TRADING_PROVIDERS,
     BotCreate,
+    BotState,
     BotUpdate,
     ConnectionCreate,
     HedgeParameters,
@@ -46,6 +48,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
         .q-field--outlined .q-field__control { border-radius: 10px; }
         .q-btn { text-transform: none; border-radius: 9px; }
         """)
+        ui.add_css(BOT_STYLES)
         with ui.header().classes("bg-white text-slate-900 border-b px-6 py-4"):
             with ui.row().classes("w-full items-center justify-between"):
                 with ui.row().classes("items-center gap-3"):
@@ -82,7 +85,11 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 bot = store.bot(bot_id)
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-md p-6"):
                     ui.label(f"平仓：{bot.name}").classes("text-xl font-bold")
-                    ui.label("将向交易所提交减仓订单，只关闭此 Bot 已分配的数量。")
+                    ui.label(
+                        "将向交易所提交减仓订单，只关闭此 Bot 已分配的数量，并结束定期重开。"
+                        if store.positions(bot_id)
+                        else "当前没有持仓。确认后将结束等待，停止定期重开。"
+                    )
 
                     async def confirm():
                         button.disable()
@@ -204,7 +211,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 bot = store.bot(bot_id) if bot_id else None
                 parameters = bot.parameters if bot else None
                 editable = (
-                    store.bot_editability(bot_id) if bot_id else {"entry_parameters": True, "slippage": True}
+                    store.bot_editability(bot_id)
+                    if bot_id
+                    else {"entry_parameters": True, "slippage": True, "reopen": True}
                 )
                 with ui.context.client.layout:
                     dialog = ui.dialog()
@@ -285,9 +294,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             .props("outlined")
                         )
                     if not editable["entry_parameters"]:
-                        ui.label(
-                            "此 Bot 已有订单或持仓，建仓参数已锁定。可修改名称和允许的滑点；新参数请另建 Bot。"
-                        ).classes("text-amber-800 text-sm")
+                        ui.label("建仓参数已锁定。可修改名称、允许的滑点和定期重开设置。").classes(
+                            "text-amber-800 text-sm"
+                        )
                         entry_controls: list[DisableableElement] = [long, short, symbol, threshold, amount]
                         for entry_control in entry_controls:
                             entry_control.disable()
@@ -310,11 +319,69 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     )
                     if not editable["slippage"]:
                         slippage.disable()
+                    reopen = ui.switch(
+                        "定期重开",
+                        value=parameters.reopen_interval_seconds is not None if parameters else False,
+                    )
+                    with ui.row().classes("w-full"):
+                        reopen_interval = (
+                            ui.number(
+                                "持仓间隔（分钟）",
+                                value=parameters.reopen_interval_seconds / 60
+                                if parameters and parameters.reopen_interval_seconds
+                                else 60,
+                                min=1,
+                                max=43200,
+                                step=1,
+                                validation={
+                                    "间隔须为 1–43,200 分钟": lambda v: (
+                                        v is not None
+                                        and 1 <= v <= 43200
+                                        and Decimal(str(v)) * 60 == (Decimal(str(v)) * 60).to_integral_value()
+                                    )
+                                },
+                            )
+                            .without_auto_validation()
+                            .classes("flex-1")
+                            .props("outlined")
+                        )
+                        random_wait = (
+                            ui.number(
+                                "随机等待上限（分钟）",
+                                value=parameters.reopen_random_wait_seconds / 60 if parameters else 5,
+                                min=0,
+                                max=5,
+                                step=0.5,
+                                validation={
+                                    "随机等待须为 0–5 分钟": lambda v: (
+                                        v is not None
+                                        and 0 <= v <= 5
+                                        and Decimal(str(v)) * 60 == (Decimal(str(v)) * 60).to_integral_value()
+                                    )
+                                },
+                            )
+                            .without_auto_validation()
+                            .classes("flex-1")
+                            .props("outlined")
+                        )
+
+                    def update_reopen_controls():
+                        reopen.set_enabled(editable["reopen"])
+                        for control in [reopen_interval, random_wait]:
+                            control.set_enabled(editable["reopen"] and reopen.value)
+
+                    reopen.on_value_change(update_reopen_controls)
+                    update_reopen_controls()
+                    ui.label(
+                        "双腿建仓确认后计时 → 平仓 → 随机等待 → 等待价差建仓。暂停保留持仓并取消计时；恢复后重新计时，手动平仓结束运行。持仓中修改间隔会从保存时重新计时。"
+                    ).classes("text-xs text-slate-500")
                     form_error = ui.label("").classes("text-sm text-red-600")
                     busy = False
-                    preview_label = ui.label("预览后保存，点击运行才会等待条件。").classes(
-                        "text-sm text-slate-500"
-                    )
+                    preview_label = ui.label(
+                        "保存会更新运行中的 Bot；修改重开间隔后重新计时。"
+                        if bot and bot.state == BotState.HOLDING
+                        else "预览后保存，点击运行才会等待条件。"
+                    ).classes("text-sm text-slate-500")
 
                     def value():
                         result = BotUpdate(
@@ -326,6 +393,10 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                                 threshold_pct=Decimal(str(threshold.value)),
                                 target_usd=Decimal(str(amount.value)),
                                 slippage_bps=Decimal(str(slippage.value)) * 100,
+                                reopen_interval_seconds=int(Decimal(str(reopen_interval.value)) * 60)
+                                if reopen.value
+                                else None,
+                                reopen_random_wait_seconds=int(Decimal(str(random_wait.value)) * 60),
                             ),
                         )
                         return result if bot else BotCreate(**result.model_dump(), request_id=request_id)
@@ -334,6 +405,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         valid = all(
                             [name.validate(), threshold.validate(), amount.validate(), slippage.validate()]
                         )
+                        if reopen.value:
+                            valid = all([reopen_interval.validate(), random_wait.validate(), valid])
                         if long.value == short.value:
                             form_error.set_text("做多和做空必须选择不同账户实例。")
                             return False
@@ -668,12 +741,16 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         ui.label("从你的第一个 Bot 开始").classes("text-2xl font-bold")
                         ui.label("先连接两个交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
                         ui.button("连接交易所账户", on_click=lambda: tabs.set_value(accounts_tab), icon="add")
-                    with ui.row().classes("w-full gap-4") as bot_summary:
+                    with ui.element("div").classes("w-full pfb-summary") as bot_summary:
                         summary_values = {}
-                        for title in ["Bots", "持仓 Bots", "账户实例"]:
-                            with ui.card().classes("flex-1 min-w-40 p-5 gap-1"):
-                                ui.label(title).classes("text-slate-500 text-sm")
-                                summary_values[title] = ui.label().classes("text-3xl font-bold")
+                        for key, title in [
+                            ("Bots", "全部 Bots"),
+                            ("持仓 Bots", "持仓中"),
+                            ("账户实例", "账户"),
+                        ]:
+                            with ui.element("div").classes("pfb-summary-item"):
+                                ui.label(title).classes("pfb-summary-label")
+                                summary_values[key] = ui.label().classes("pfb-summary-value")
                     cards_container = ui.column().classes("w-full gap-4")
                     await bots_view()
                 with ui.tab_panel(strategies_tab).classes("p-0 gap-4"):
@@ -702,9 +779,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         points_button = ui.button("刷新积分", icon="refresh", on_click=refresh_points).props(
                             "outline"
                         )
-                    ui.label("直接读取账户自己的官方积分，每 2 分钟自动更新。积分不分摊到单个 Bot。").classes(
-                        "text-slate-600"
-                    )
+                    ui.label(
+                        "每 2 分钟自动采集账户自己的官方积分，并保存历史曲线。关闭浏览器也会持续采集，积分不分摊到 Bot。"
+                    ).classes("text-slate-600")
                     points_feed = PointsFeed(runtime.points)
                 with ui.tab_panel(alerts_tab).classes("p-0 gap-4"):
                     alerts_view()

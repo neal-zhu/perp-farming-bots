@@ -119,6 +119,8 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
                     "pnl": await runtime.pnl(bot.id),
                     "positions": [p.model_dump(mode="json") for p in store.positions(bot.id)],
                     "editability": store.bot_editability(bot.id),
+                    "cycle": store.cycle(bot.id),
+                    "turnover": store.turnover(bot.id),
                 }
             )
         return result
@@ -133,6 +135,8 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
             "orders": store.bot_orders(bot_id),
             "operations": store.rows(operations, bot_id),
             "editability": store.bot_editability(bot_id),
+            "cycle": store.cycle(bot_id),
+            "turnover": store.turnover(bot_id),
         }
 
     @app.get("/api/bots/{bot_id}/funding")
@@ -167,6 +171,10 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
     @app.get("/api/points")
     def points():
         return runtime.points.listing()
+
+    @app.get("/api/connections/{connection_id}/points/history")
+    def points_history(connection_id: str, period: Literal["24h", "7d", "30d"] = "24h"):
+        return runtime.points.history(connection_id, period)
 
     @app.post("/api/points/refresh")
     async def refresh_points():

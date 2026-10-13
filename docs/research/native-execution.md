@@ -44,4 +44,6 @@ Initial executable pair assets are BTC, ETH and SOL: Arcus crypto perpetual base
 
 Public Arcus/Core/RH reads succeeded on 2026-10-12. The application validates exact native market identity, rejects stale stream timestamps and expired settlement times, and caches reads for 30 seconds. Failed refreshes return unavailable values rather than an old successful rate or zero. A displayed equal-notional net receipt rate (short minus long) is a current forecast, not a bot-specific realized payment or complete PnL.
 
+On a later 2026-10-12 live probe, both Core and RH subscription snapshots and subsequent updates had message timestamps about 70 ms ahead of the local receiving clock. A strict nonnegative-age check incorrectly reported these fresh messages as expired. The freshness policy now allows up to five seconds of upstream clock lead while retaining the 60-second maximum age and future settlement validation. Larger clock leads are explicitly reported as timestamp anomalies. A fixed-clock regression test replays the observed native snapshot through the complete funding read.
+
 The public [websockets](https://github.com/python-websockets/websockets) library (BSD-3-Clause) supplies the short read-only stream connection; no private account or trading stream is opened by funding display.

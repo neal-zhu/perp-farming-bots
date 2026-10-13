@@ -23,7 +23,7 @@ The user decided to defer Arcus points on 2026-10-12. All in-progress Arcus poin
 
 ## Runtime and presentation
 
-The dedicated read task polls every two minutes, independently of strategy execution. An explicit refresh button/API is available; requests within ten seconds are coalesced. Values and timestamps are cached in memory only. Successful data older than five minutes becomes explicitly unavailable. A failed refresh replaces the affected metric with an unknown value; it does not keep showing an old success as current or synthesize zero.
+The dedicated read task polls every two minutes, independently of strategy execution. An explicit refresh button/API is available; requests within ten seconds are coalesced. Current snapshots remain in memory; each actual read persists its exact decimal value or explicit failure, native scope, sample timestamp and source in SQLite. The history API and persistent ECharts view support 24-hour, seven-day and 30-day windows. Failed samples remain null; unobserved gaps longer than five minutes break the line without inventing stored observations. Successful current data older than five minutes becomes explicitly unavailable. A failed refresh replaces the affected current metric with an unknown value; it does not keep showing an old success as current or synthesize zero. Restarting continues polling and preserves history.
 
 One failed account does not block other accounts' points reads. JSON null, missing fields, booleans, strings, negative or nonfinite numbers fail explicitly. Authorization tokens stay in request headers and are never returned in the points API or raw error messages. Decimal parsing preserves native numeric precision.
 

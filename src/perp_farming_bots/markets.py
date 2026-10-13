@@ -186,7 +186,13 @@ class Markets:
                     m = response["market_stats"]
                     if m["market_id"] != spec.market_id or m["symbol"] != spec.symbol:
                         raise ValueError("资金费率市场身份不匹配")
-                    if not 0 <= time.time() - response["timestamp"] / 1000 <= 60:
+                    age = time.time() - response["timestamp"] / 1000
+                    # Native Core/RH clocks can lead the receiving host slightly.
+                    # Allow at most 5 seconds of clock skew, never an unbounded
+                    # future timestamp or a snapshot older than 60 seconds.
+                    if age < -5:
+                        raise ValueError("资金费率时间戳异常：交易所时间领先本机超过 5 秒")
+                    if not age <= 60:
                         raise ValueError("资金费率数据已过期")
                     # Lighter's native market_stats rates are percentage points.
                     next_payment = (m["funding_timestamp"] // 1000) + 3600
