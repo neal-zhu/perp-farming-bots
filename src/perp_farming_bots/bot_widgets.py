@@ -6,17 +6,28 @@ from typing import Any
 from nicegui import ui
 
 from .formatting import money, pnl_money, rate, stamp
-from .models import PROVIDER_NAMES, STATE_NAMES, Bot, BotState, Connection, Position
+from .models import (
+    GRID_DIRECTION_NAMES,
+    PROVIDER_NAMES,
+    STATE_NAMES,
+    Bot,
+    BotState,
+    Connection,
+    GridParameters,
+    HedgeParameters,
+    Position,
+)
 from .store import Store, alerts
 
 
 class BotLeg:
     def __init__(self, role: str):
         self.role = role
-        with ui.element("div").classes("pfb-leg"):
+        self.root = ui.element("div").classes("pfb-leg")
+        with self.root:
             with ui.element("div").classes("pfb-leg-info"):
                 with ui.element("div").classes("pfb-leg-head"):
-                    ui.label("做多" if role == "long" else "做空").classes(
+                    self.role_label = ui.label("做多" if role == "long" else "做空").classes(
                         f"pfb-leg-role pfb-leg-role--{role}"
                     )
                     self.account = ui.label().classes("pfb-leg-account")
@@ -98,7 +109,7 @@ class BotCard:
                         )
                 with ui.element("div").classes("pfb-metric"):
                     ui.label("累计成交额").classes("pfb-metric-label").tooltip(
-                        "此 Bot 的已确认成交：两腿建仓和平仓，按实际数量 × 成交均价累加；不含未确认订单。"
+                        "此 Bot 的已确认成交，按实际数量 × 成交均价累加；不含未确认订单。"
                     )
                     self.turnover = ui.label().classes("pfb-metric-value")
             with ui.element("div").classes("pfb-trading-toolbar"):
@@ -130,7 +141,8 @@ class BotCard:
                     for heading in ["账户", "仓位", "入场价", "预估资金费"]:
                         ui.label(heading)
                 self.legs = {role: BotLeg(role) for role in ("long", "short")}
-            with ui.element("div").classes("pfb-funding-summary"):
+            self.funding_summary = ui.element("div").classes("pfb-funding-summary")
+            with self.funding_summary:
                 label = ui.label("预估净资金费率").classes("pfb-leg-label")
                 label.tooltip("按两侧等额名义金额计算。费率会随市场变化，不是实际到账收益。")
                 self.net_funding = ui.label().classes("pfb-funding-value")
@@ -152,13 +164,16 @@ class BotCard:
                 ui.label("资金费率为下次结算预估，实际资金费尚未计入 Bot 盈亏。")
                 with ui.element("div").classes("pfb-detail-funding"):
                     self.funding_details: dict[str, tuple[ui.label, ui.label, ui.label, ui.label]] = {}
+                    self.funding_detail_roots: dict[str, ui.element] = {}
                     for role in ("long", "short"):
-                        with ui.element("div"):
+                        self.funding_detail_roots[role] = ui.element("div")
+                        with self.funding_detail_roots[role]:
                             funding_title = ui.label().classes("pfb-detail-title")
                             previous, settlement, received = ui.label(), ui.label(), ui.label()
                             self.funding_details[role] = funding_title, previous, settlement, received
 
     def update(self, bot: Bot, store: Store, pnl: dict[str, Any], funding: dict[str, Any]):
+        assert isinstance(bot.parameters, HedgeParameters)
         positions = store.positions(bot.id)
         editable = store.bot_editability(bot.id)
         pending = store.bot_pending(bot.id)
@@ -229,23 +244,7 @@ class BotCard:
             if Decimal(net) == 0
             else f"预计净{'收取' if Decimal(net) > 0 else '支付'} {rate(abs(Decimal(net)))} / {period}"
         )
-        for key, element in self.pnl.items():
-            value = pnl[key]
-            element.set_text(money(value) if key == "fees" else pnl_money(value))
-            rounded = Decimal(value).quantize(Decimal("0.01")) if value is not None else None
-            tone = (
-                "unknown"
-                if rounded is None
-                else "neutral"
-                if rounded == 0 or key != "net"
-                else "positive"
-                if rounded > 0
-                else "negative"
-            )
-            element.classes(
-                replace=f"pfb-metric-value pfb-value-{tone}"
-                + (" pfb-metric-value--main" if key == "net" else "")
-            )
+        self.update_pnl(pnl)
         mismatched = bool(positions) and (
             len(positions) != 2 or positions[0].quantity != positions[1].quantity
         )
@@ -278,8 +277,6 @@ class BotCard:
             replace="pfb-match pfb-match--"
             + ("bad" if mismatched else "good" if matched and not pnl["unavailable_reason"] else "unknown")
         )
-        self.pnl_error.set_visibility(bool(pnl["unavailable_reason"]))
-        self.pnl_error.set_text(pnl["unavailable_reason"] or "")
         can_run = (
             bot.state in {BotState.READY, BotState.PAUSED}
             and not pending
@@ -301,6 +298,121 @@ class BotCard:
             and (bool(positions) or cycle["number"] > 1 and bot.state in {BotState.WAITING, BotState.PAUSED})
         )
         self.remove.set_enabled(editable["delete"])
+
+    def update_pnl(self, pnl: dict[str, Any]) -> None:
+        for key, element in self.pnl.items():
+            value = pnl[key]
+            element.set_text(money(value) if key == "fees" else pnl_money(value))
+            rounded = Decimal(value).quantize(Decimal("0.01")) if value is not None else None
+            tone = (
+                "unknown"
+                if rounded is None
+                else "neutral"
+                if rounded == 0 or key != "net"
+                else "positive"
+                if rounded > 0
+                else "negative"
+            )
+            element.classes(
+                replace=f"pfb-metric-value pfb-value-{tone}"
+                + (" pfb-metric-value--main" if key == "net" else "")
+            )
+        self.pnl_error.set_visibility(bool(pnl["unavailable_reason"]))
+        self.pnl_error.set_text(pnl["unavailable_reason"] or "")
+
+
+class GridBotCard(BotCard):
+    def update(self, bot: Bot, store: Store, pnl: dict[str, Any], funding: dict[str, Any]):
+        p = bot.parameters
+        assert isinstance(p, GridParameters)
+        positions, state = store.positions(bot.id), store.grid_state(bot.id)
+        pending, volume = store.bot_pending(bot.id), store.turnover(bot.id)
+        self.name.set_text(bot.name)
+        self.symbol.set_text(f"{p.symbol} 永续 · {GRID_DIRECTION_NAMES[p.direction]}网格 · {p.grid_count} 格")
+        state_name = (
+            "网格运行中"
+            if bot.state == BotState.HOLDING
+            else "等待进入区间"
+            if bot.state == BotState.WAITING
+            else STATE_NAMES[bot.state]
+        )
+        self.state.set_text(state_name)
+        self.state.classes(replace=f"pfb-state pfb-state--{bot.state.value}")
+        self.turnover.set_text(
+            "待确认" if volume["has_unconfirmed_orders"] else money(volume["confirmed_usd"])
+        )
+        self.confirmed_turnover.set_text(
+            f"累计已确认成交额 {money(volume['confirmed_usd'])} · 包含初始建仓、每格成交和平仓"
+        )
+        self.parameters.set_text(
+            f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · 名义仓位预算 {money(p.budget_usd)} · 滑点上限 {rate(p.slippage_bps / 100)}"
+        )
+        self.realized.set_text(f"已实现价格盈亏 {pnl_money(pnl['realized'])}")
+        self.reason.set_text(f"状态说明：{bot.reason}")
+        schedule = "价格触发 · 需程序在线 · 运行后按当前价格建立初始仓位"
+        if state is not None:
+            levels, cursor = state["levels"], state["cursor"]
+            buys = money(levels[cursor - 1]) if cursor > 0 else "区间下沿"
+            sells = money(levels[cursor + 1]) if cursor < p.grid_count else "区间上沿"
+            schedule = f"每格 {state['quantity_per_grid']} {p.symbol} · 下格买入 {buys} · 上格卖出 {sells}"
+        self.reopen_status.set_text(schedule)
+        position = positions[0] if len(positions) == 1 else None
+        role = position.role if position else "long"
+        for key, leg in self.legs.items():
+            leg.root.set_visibility(key == role)
+        data = funding["position"]
+        leg = self.legs[role]
+        leg.update(store.connection(p.connection_id), position, data)
+        leg.role_label.set_text("多仓" if position and role == "long" else "空仓" if position else "空仓位")
+        if position is None and data["status"] == "available":
+            leg.funding.set_text(rate(data["predicted_rate_pct"]))
+            leg.funding_title.set_text("当前费率 · 无仓位")
+        self.funding_summary.set_visibility(False)
+        for key, root in self.funding_detail_roots.items():
+            root.set_visibility(key == role)
+        title, previous, settlement, received = self.funding_details[role]
+        title.set_text("账户资金费数据")
+        previous.set_text(
+            f"上次结算 {rate(data['last_rate_pct'])}"
+            if data["status"] == "available"
+            else data["unavailable_reason"]
+        )
+        settlement.set_text(f"下次结算 {stamp(data['next_payment_at'])}")
+        received.set_text(f"更新于 {stamp(data['received_at'])}")
+        settlement.set_visibility(data["status"] == "available")
+        received.set_visibility(data["status"] == "available")
+        self.notice.set_visibility(bot.state == BotState.ATTENTION or pending)
+        self.exposure.set_text(
+            bot.reason if bot.state == BotState.ATTENTION else "原订单正在确认，已停止新动作。"
+        )
+        self.match.set_text(
+            "待确认"
+            if pending
+            else "多仓"
+            if position and role == "long"
+            else "空仓"
+            if position
+            else "无仓位"
+        )
+        self.match.classes(replace="pfb-match pfb-match--unknown" if pending else "pfb-match pfb-match--good")
+        self.update_pnl(pnl)
+        signed = position.quantity * (1 if role == "long" else -1) if position else Decimal(0)
+        from .grid import target_quantity
+
+        aligned = (
+            state is None
+            or state["initialized"]
+            and signed == target_quantity(p, state["cursor"], Decimal(state["quantity_per_grid"]))
+        )
+        self.buttons["run"].set_enabled(
+            bot.state in {BotState.READY, BotState.PAUSED} and not pending and aligned
+        )
+        self.buttons["pause"].set_enabled(
+            bot.state in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION} and not pending
+        )
+        self.buttons["sync"].set_visibility(bot.state == BotState.ATTENTION)
+        self.close.set_enabled(not pending and bot.state != BotState.CLOSED)
+        self.remove.set_enabled(store.bot_editability(bot.id)["delete"])
 
 
 class AlertFeed:

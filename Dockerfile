@@ -7,6 +7,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 COPY src ./src
+COPY third_party ./third_party
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev \
     && mkdir /app/data && chown -R bot:bot /app
 USER bot

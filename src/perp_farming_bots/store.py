@@ -35,6 +35,8 @@ from .models import (
     BotUpdate,
     Connection,
     ConnectionCreate,
+    GridParameters,
+    HedgeParameters,
     OrderIntent,
     OrderResult,
     Position,
@@ -164,6 +166,24 @@ point_samples = Table(
     UniqueConstraint("scope_id", "metric", "sampled_at"),
 )
 
+grid_states = Table(
+    "grid_states",
+    metadata,
+    Column("bot_id", String, primary_key=True),
+    Column("cursor", Integer, nullable=False),
+    Column("quantity_per_grid", String, nullable=False),
+    Column("levels", Text, nullable=False),
+    Column("initialized", Integer, nullable=False),
+)
+grid_actions = Table(
+    "grid_actions",
+    metadata,
+    Column("operation_id", String, primary_key=True),
+    Column("bot_id", String, nullable=False),
+    Column("cursor_after", Integer, nullable=False),
+    Column("target_quantity", String, nullable=False),
+)
+
 
 class Store:
     """Account identities and durable native-order journals in a single-process SQLite store."""
@@ -173,7 +193,7 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 2, 3, 4}:
+            if version not in {0, 2, 3, 4, 5}:
                 raise ValueError(f"Unsupported database schema version {version}")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
@@ -234,7 +254,7 @@ class Store:
                             updated_at=time.time(),
                         )
                     )
-            db.exec_driver_sql("PRAGMA user_version=4")
+            db.exec_driver_sql("PRAGMA user_version=5")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -297,14 +317,14 @@ class Store:
 
     def delete_connection(self, connection_id: str) -> None:
         for bot in self.bots():
-            if connection_id in {bot.parameters.long_connection_id, bot.parameters.short_connection_id}:
+            if connection_id in bot.parameters.connection_ids:
                 raise ValueError("账户仍被 Bot 引用，请保留账户或先删除已结束的 Bot")
         with self.transaction() as db:
             db.execute(delete(connections).where(connections.c.id == connection_id))
 
     def add_bot(self, value: BotCreate) -> Bot:
-        self.connection(value.parameters.long_connection_id)
-        self.connection(value.parameters.short_connection_id)
+        for connection_id in value.parameters.connection_ids:
+            self.connection(connection_id)
         now = time.time()
         bot = Bot(
             **value.model_dump(),
@@ -328,6 +348,7 @@ class Store:
                 ):
                     raise ValueError("相同创建请求 ID 不能用于不同 Bot 参数")
                 return previous
+            self.check_grid_reservation(bot)
             db.execute(insert(bots).values(**record))
             db.execute(
                 insert(bot_cycles).values(
@@ -340,6 +361,21 @@ class Store:
                 )
             )
         return bot
+
+    def check_grid_reservation(self, bot: Bot) -> None:
+        if bot.state == BotState.CLOSED:
+            return
+        for other in self.bots():
+            if other.id == bot.id or other.state == BotState.CLOSED:
+                continue
+            if (
+                (bot.strategy == "grid" or other.strategy == "grid")
+                and bot.parameters.symbol == other.parameters.symbol
+                and set(bot.parameters.connection_ids) & set(other.parameters.connection_ids)
+            ):
+                raise ValueError(
+                    f"网格需要独占账户的该币种，已被 Bot「{other.name}」使用；请选择其他账户或币种"
+                )
 
     @staticmethod
     def _bot(row: Any) -> Bot:
@@ -395,6 +431,7 @@ class Store:
             "entry_parameters": not pending
             and not self.positions(bot_id)
             and not self.bot_orders(bot_id)
+            and self.grid_state(bot_id) is None
             and bot.state in {BotState.READY, BotState.WAITING, BotState.PAUSED},
             "slippage": not pending and bot.state != BotState.ATTENTION,
             "reopen": not pending and bot.state != BotState.ATTENTION,
@@ -405,6 +442,8 @@ class Store:
 
     def update_bot(self, bot_id: str, value: BotUpdate) -> Bot:
         bot = self.bot(bot_id)
+        if type(value.parameters) is not type(bot.parameters):
+            raise ValueError("不能修改 Bot 的策略类型，请新建 Bot")
         editable = self.bot_editability(bot_id)
         entry_fields = set(type(value.parameters).model_fields) - {
             "slippage_bps",
@@ -418,14 +457,19 @@ class Store:
                 raise ValueError("已有订单或持仓，不能修改账户、币种、建仓金额或价差条件；请新建 Bot")
         if value.parameters.slippage_bps != bot.parameters.slippage_bps and not editable["slippage"]:
             raise ValueError("有未确认订单或需要处理的状态，不能修改滑点；请先同步并处理")
-        interval_changed = value.parameters.reopen_interval_seconds != bot.parameters.reopen_interval_seconds
-        if (
-            interval_changed
-            or value.parameters.reopen_random_wait_seconds != bot.parameters.reopen_random_wait_seconds
-        ) and not editable["reopen"]:
-            raise ValueError("有未确认订单或需要处理的状态，不能修改定期重开；请先同步并处理")
-        self.connection(value.parameters.long_connection_id)
-        self.connection(value.parameters.short_connection_id)
+        interval_changed = False
+        if isinstance(value.parameters, HedgeParameters) and isinstance(bot.parameters, HedgeParameters):
+            interval_changed = (
+                value.parameters.reopen_interval_seconds != bot.parameters.reopen_interval_seconds
+            )
+            if (
+                interval_changed
+                or value.parameters.reopen_random_wait_seconds != bot.parameters.reopen_random_wait_seconds
+            ) and not editable["reopen"]:
+                raise ValueError("有未确认订单或需要处理的状态，不能修改定期重开；请先同步并处理")
+        for connection_id in value.parameters.connection_ids:
+            self.connection(connection_id)
+        self.check_grid_reservation(bot.model_copy(update={"parameters": value.parameters}))
         values: dict[str, Any] = {
             "name": value.name,
             "parameters": value.parameters.model_dump_json(),
@@ -437,6 +481,7 @@ class Store:
         with self.transaction() as db:
             db.execute(update(bots).where(bots.c.id == bot_id).values(**values))
             if interval_changed:
+                assert isinstance(value.parameters, HedgeParameters)
                 interval = value.parameters.reopen_interval_seconds
                 db.execute(
                     update(bot_cycles)
@@ -456,6 +501,94 @@ class Store:
         with self.engine.connect() as db:
             return [Position.model_validate(dict(row)) for row in db.execute(query).mappings()]
 
+    def grid_state(self, bot_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as db:
+            row = db.execute(select(grid_states).where(grid_states.c.bot_id == bot_id)).mappings().first()
+        if row is None:
+            return None
+        state = dict(row)
+        state["levels"] = json.loads(state["levels"])
+        state["initialized"] = bool(state["initialized"])
+        return state
+
+    def begin_grid_action(
+        self, bot_id: str, cursor: int, target: Decimal, *, layout: dict[str, Any] | None = None
+    ) -> str:
+        if self.bot_pending(bot_id):
+            raise ValueError("网格有未确认操作，禁止提交新订单")
+        if not isinstance(self.bot(bot_id).parameters, GridParameters):
+            raise ValueError("此 Bot 不是网格")
+        op_id, now = uuid.uuid4().hex, time.time()
+        with self.transaction() as db:
+            if layout is not None:
+                db.execute(
+                    insert(grid_states).values(
+                        bot_id=bot_id,
+                        cursor=cursor,
+                        quantity_per_grid=str(layout["quantity_per_grid"]),
+                        levels=json.dumps([str(p) for p in layout["levels"]]),
+                        initialized=0,
+                    )
+                )
+            db.execute(
+                insert(operations).values(
+                    id=op_id,
+                    bot_id=bot_id,
+                    kind="grid_initial" if layout else "grid_step",
+                    status="pending",
+                    message="",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.execute(
+                insert(grid_actions).values(
+                    operation_id=op_id,
+                    bot_id=bot_id,
+                    cursor_after=cursor,
+                    target_quantity=str(target),
+                )
+            )
+        return op_id
+
+    def complete_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> None:
+        with self.transaction() as db:
+            action = (
+                db.execute(select(grid_actions).where(grid_actions.c.operation_id == op_id)).mappings().one()
+            )
+            if action["bot_id"] != bot_id:
+                raise ValueError("网格操作归属不符")
+            owned = list(db.execute(select(positions).where(positions.c.bot_id == bot_id)).mappings())
+            quantity = sum(
+                (Decimal(p["quantity"]) * (1 if p["role"] == "long" else -1) for p in owned), Decimal(0)
+            )
+            if (
+                len(owned) > 1
+                or quantity != Decimal(action["target_quantity"])
+                or any(
+                    not order["applied"]
+                    for order in db.execute(select(orders).where(orders.c.operation_id == op_id)).mappings()
+                )
+            ):
+                raise ValueError("网格实际成交未达到本格目标；保留实际仓位，停止后续动作，请平仓处理")
+            db.execute(
+                update(grid_states)
+                .where(grid_states.c.bot_id == bot_id)
+                .values(
+                    cursor=action["cursor_after"],
+                    initialized=1,
+                )
+            )
+            self.finish_operation(
+                op_id, "completed", "原订单已确认；等待手动恢复" if recovered else "本格实际成交已确认", db
+            )
+            self.set_state(
+                bot_id,
+                BotState.PAUSED if recovered else BotState.HOLDING,
+                "网格原订单已确认，点击运行继续" if recovered else "网格运行中，等待相邻格线",
+                db,
+            )
+
     def rows(self, table: Table, bot_id: str | None = None) -> list[dict[str, Any]]:
         query = select(table)
         if bot_id is not None:
@@ -473,14 +606,18 @@ class Store:
             return dict(db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one())
 
     def arm_reopen(self, bot_id: str) -> None:
-        interval = self.bot(bot_id).parameters.reopen_interval_seconds
+        parameters = self.bot(bot_id).parameters
+        assert isinstance(parameters, HedgeParameters)
+        interval = parameters.reopen_interval_seconds
         now = time.time()
         values: dict[str, Any] = {"next_reopen_at": now + interval if interval is not None else None}
         with self.transaction() as db:
             db.execute(update(bot_cycles).where(bot_cycles.c.bot_id == bot_id).values(**values))
 
     def complete_open(self, bot_id: str, op_id: str, reason: str) -> None:
-        interval = self.bot(bot_id).parameters.reopen_interval_seconds
+        parameters = self.bot(bot_id).parameters
+        assert isinstance(parameters, HedgeParameters)
+        interval = parameters.reopen_interval_seconds
         now = time.time()
         with self.transaction() as db:
             cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
@@ -499,7 +636,9 @@ class Store:
             db.execute(update(bot_cycles).where(bot_cycles.c.bot_id == bot_id).values(next_reopen_at=None))
 
     def complete_reopen_close(self, bot_id: str, op_id: str, wait_seconds: int) -> None:
-        if not 0 <= wait_seconds <= self.bot(bot_id).parameters.reopen_random_wait_seconds:
+        parameters = self.bot(bot_id).parameters
+        assert isinstance(parameters, HedgeParameters)
+        if not 0 <= wait_seconds <= parameters.reopen_random_wait_seconds:
             raise ValueError("随机等待超出设置上限")
         unresolved = any(
             not row["applied"] or row["status"] in {"prepared", "submitting", "submitted", "unknown"}
@@ -753,18 +892,51 @@ class Store:
                         db.execute(update(positions).where(key).values(quantity=str(owned - quantity)))
                 else:
                     if position is not None:
-                        raise ValueError("此 Bot 已有该腿库存，禁止重复开仓")
-                    db.execute(
-                        insert(positions).values(
-                            bot_id=row["bot_id"],
-                            role=row["role"],
-                            connection_id=row["connection_id"],
-                            symbol=intent.symbol,
-                            quantity=str(quantity),
-                            entry_price=str(price),
-                            opening_fee=str(result.fee) if result.fee is not None else None,
+                        strategy = db.execute(
+                            select(bots.c.strategy).where(bots.c.id == row["bot_id"])
+                        ).scalar_one()
+                        if strategy != "grid":
+                            raise ValueError("此 Bot 已有该腿库存，禁止重复开仓")
+                        owned = Decimal(position["quantity"])
+                        entry = (owned * Decimal(position["entry_price"]) + quantity * price) / (
+                            owned + quantity
                         )
-                    )
+                        opening_fee = (
+                            Decimal(position["opening_fee"]) + result.fee
+                            if position["opening_fee"] is not None and result.fee is not None
+                            else None
+                        )
+                        db.execute(
+                            update(positions)
+                            .where(key)
+                            .values(
+                                quantity=str(owned + quantity),
+                                entry_price=str(entry),
+                                opening_fee=str(opening_fee) if opening_fee is not None else None,
+                            )
+                        )
+                    else:
+                        opposite = db.execute(
+                            select(positions).where(
+                                positions.c.bot_id == row["bot_id"], positions.c.role != row["role"]
+                            )
+                        ).first()
+                        strategy = db.execute(
+                            select(bots.c.strategy).where(bots.c.id == row["bot_id"])
+                        ).scalar_one()
+                        if strategy == "grid" and opposite is not None:
+                            raise ValueError("网格反向建仓前必须确认原方向已平仓")
+                        db.execute(
+                            insert(positions).values(
+                                bot_id=row["bot_id"],
+                                role=row["role"],
+                                connection_id=row["connection_id"],
+                                symbol=intent.symbol,
+                                quantity=str(quantity),
+                                entry_price=str(price),
+                                opening_fee=str(result.fee) if result.fee is not None else None,
+                            )
+                        )
                 db.execute(
                     insert(fills).values(
                         id=order_id,

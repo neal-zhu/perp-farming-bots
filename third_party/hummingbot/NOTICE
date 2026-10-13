@@ -1,0 +1,7 @@
+This product includes a modified portion of Hummingbot, developed by the Hummingbot contributors.
+Source: https://github.com/hummingbot/hummingbot
+Commit: 9af100d6822da7d2d0291a906c730ef172284ee2
+Original: hummingbot/strategy_v2/utils/distributions.py (Distributions.linear).
+Local: src/perp_farming_bots/hummingbot_grid.py.
+Modifications: Decimal-only inputs, validation, isolated function, typing and formatting.
+Licensed under the Apache License, Version 2.0.

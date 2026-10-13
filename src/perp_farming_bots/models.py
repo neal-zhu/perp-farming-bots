@@ -120,10 +120,47 @@ class HedgeParameters(StrictModel):
             raise ValueError("首批支持 BTC、ETH、SOL 标准加密资产永续；其他合约等待单位核实")
         return self
 
+    @property
+    def connection_ids(self) -> list[str]:
+        return [self.long_connection_id, self.short_connection_id]
+
+
+GRID_DIRECTION_NAMES = {"long": "做多", "short": "做空", "neutral": "中性"}
+
+
+class GridParameters(StrictModel):
+    connection_id: str
+    symbol: str = Field(pattern=r"^[A-Z0-9]+$")
+    direction: Literal["long", "short", "neutral"]
+    lower_price: Decimal = Field(gt=0, allow_inf_nan=False)
+    upper_price: Decimal = Field(gt=0, allow_inf_nan=False)
+    grid_count: int = Field(ge=2, le=100, strict=True)
+    budget_usd: Decimal = Field(gt=0, le=Decimal("1000000"), allow_inf_nan=False)
+    slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def valid_grid(self) -> GridParameters:
+        if self.symbol not in SUPPORTED_ASSETS:
+            raise ValueError("网格支持 BTC、ETH、SOL 标准加密资产永续")
+        if self.lower_price >= self.upper_price:
+            raise ValueError("价格下限必须低于上限")
+        if self.direction == "neutral" and self.grid_count % 2:
+            raise ValueError("中性网格需要偶数格，区间中点为零仓位")
+        return self
+
+    @property
+    def connection_ids(self) -> list[str]:
+        return [self.connection_id]
+
 
 class BotUpdate(StrictModel):
     name: str = Field(min_length=1, max_length=80)
-    parameters: HedgeParameters
+    parameters: HedgeParameters | GridParameters
 
     @field_validator("name")
     @classmethod
@@ -137,12 +174,14 @@ class BotCreate(BotUpdate):
     request_id: str = Field(min_length=8, max_length=80)
     strategy: str = "spread_hedging"
 
-    @field_validator("strategy")
-    @classmethod
-    def implemented_strategy(cls, value: str) -> str:
-        if value != "spread_hedging":
-            raise ValueError("网格和剥头皮尚未实现")
-        return value
+    @model_validator(mode="after")
+    def implemented_strategy(self) -> BotCreate:
+        expected = {"spread_hedging": HedgeParameters, "grid": GridParameters}
+        if self.strategy not in expected:
+            raise ValueError("该策略尚未实现")
+        if not isinstance(self.parameters, expected[self.strategy]):
+            raise ValueError("策略与参数类型不匹配")
+        return self
 
 
 class Bot(BotCreate):
@@ -317,8 +356,8 @@ STRATEGIES: list[StrategyDefinition] = [
     {
         "id": "grid",
         "name": "永续网格",
-        "available": False,
-        "description": "价格区间、网格数量和预算。开发中。",
+        "available": True,
+        "description": "单账户做多、做空或中性等差网格；价格触发真实限价 IOC 成交，需程序持续在线。",
     },
     {
         "id": "scalping",

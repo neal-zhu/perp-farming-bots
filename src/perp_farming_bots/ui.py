@@ -10,8 +10,9 @@ from nicegui.elements.mixins.disableable_element import DisableableElement
 from pydantic import SecretStr, ValidationError
 
 from .bot_styles import BOT_STYLES
-from .bot_widgets import AlertFeed, BotCard
+from .bot_widgets import AlertFeed, BotCard, GridBotCard
 from .formatting import money, stamp
+from .grid_ui import grid_dialog
 from .models import (
     PROVIDER_NAMES,
     STRATEGIES,
@@ -21,6 +22,7 @@ from .models import (
     BotUpdate,
     ConnectionCreate,
     HedgeParameters,
+    Preview,
     Provider,
 )
 from .notifications import Notifications
@@ -86,9 +88,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 with ui.dialog() as dialog, ui.card().classes("w-full max-w-md p-6"):
                     ui.label(f"平仓：{bot.name}").classes("text-xl font-bold")
                     ui.label(
-                        "将向交易所提交减仓订单，只关闭此 Bot 已分配的数量，并结束定期重开。"
+                        "将向交易所提交减仓订单，只关闭此 Bot 已分配的数量，并结束策略运行。"
                         if store.positions(bot_id)
-                        else "当前没有持仓。确认后将结束等待，停止定期重开。"
+                        else "当前没有持仓。确认后将结束此 Bot 的策略运行。"
                     )
 
                     async def confirm():
@@ -126,7 +128,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         bot = store.bot(bot.id)
                         if bot.id not in bot_cards:
                             with cards_container:
-                                bot_cards[bot.id] = BotCard(
+                                card_class = GridBotCard if bot.strategy == "grid" else BotCard
+                                bot_cards[bot.id] = card_class(
                                     bot.id, action, bot_dialog, delete_dialog, close_dialog, detail_dialog
                                 )
                         bot_cards[bot.id].update(bot, store, pnl, funding)
@@ -197,19 +200,63 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         button = ui.button("确认删除", on_click=confirm, color="negative")
                 dialog.open()
 
-            def bot_dialog(bot_id: str | None = None):
-                form_key = bot_id or "create"
+            def bot_dialog(bot_id: str | None = None, strategy_id: str | None = None):
+                if bot_id:
+                    strategy_id = store.bot(bot_id).strategy
+                if strategy_id is None:
+                    with ui.context.client.layout:
+                        picker = ui.dialog()
+                    with picker, ui.card().classes("w-full max-w-xl p-6 gap-4"):
+                        ui.label("选择策略").classes("text-2xl font-bold")
+                        ui.label("每个 Bot 独立配置、独立记录成交。").classes("text-sm text-slate-500")
+                        for item in STRATEGIES:
+                            if not item["available"]:
+                                continue
+                            with ui.card().classes("w-full p-4 border border-slate-200 shadow-none"):
+                                ui.label(item["name"]).classes("font-semibold text-lg")
+                                ui.label(item["description"]).classes("text-sm text-slate-500")
+
+                                def choose(sid=item["id"]):
+                                    with client.layout:
+                                        picker.close()
+                                        picker.delete()
+                                        bot_dialog(strategy_id=sid)
+
+                                ui.button("选择此策略", on_click=choose).props("outline dense")
+                        ui.button("取消", on_click=picker.close).props("flat")
+                    picker.open()
+                    return
+                form_key = bot_id or f"create:{strategy_id}"
                 if form_key in bot_forms:
                     bot_forms[form_key].open()
                     return
                 accounts = store.connections()
-                if len(accounts) < 2:
-                    notify("请先添加至少两个账户实例；同一交易所可以添加多个", color="warning")
+                minimum = 1 if strategy_id == "grid" else 2
+                if len(accounts) < minimum:
+                    notify(
+                        "网格需要至少一个账户实例"
+                        if minimum == 1
+                        else "请先添加至少两个账户实例；同一交易所可以添加多个",
+                        color="warning",
+                    )
                     tabs.set_value(accounts_tab)
                     return
                 request_id = uuid.uuid4().hex
+                if strategy_id == "grid":
+
+                    async def saved():
+                        bot_forms.pop(form_key, None)
+                        await bots_view()
+                        tabs.set_value(bots_tab)
+                        notify("网格已保存" if bot_id else "网格已创建，点击运行开始", color="positive")
+
+                    with ui.context.client.layout:
+                        bot_forms[form_key] = grid_dialog(store, runtime, request_id, saved, bot_id)
+                    bot_forms[form_key].open()
+                    return
                 bot = store.bot(bot_id) if bot_id else None
                 parameters = bot.parameters if bot else None
+                assert parameters is None or isinstance(parameters, HedgeParameters)
                 editable = (
                     store.bot_editability(bot_id)
                     if bot_id
@@ -418,6 +465,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             return
                         try:
                             result = await runtime.preview(value())
+                            assert isinstance(result, Preview)
                             preview_label.set_text(
                                 f"{result.source} · 当前价差 {result.spread_pct:.4f}% · "
                                 f"数量 {result.quantity} · 预计费用 {money(result.estimated_fees)}"
@@ -742,7 +790,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     with ui.card().classes("w-full p-10 items-center gap-4") as empty_bots:
                         ui.icon("rocket_launch", size="48px").classes("text-emerald-600")
                         ui.label("从你的第一个 Bot 开始").classes("text-2xl font-bold")
-                        ui.label("先连接两个交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
+                        ui.label("先连接交易所账户，再选择策略、币种和金额。").classes("text-slate-500")
                         ui.button("连接交易所账户", on_click=lambda: tabs.set_value(accounts_tab), icon="add")
                     with ui.element("div").classes("w-full pfb-summary") as bot_summary:
                         summary_values = {}
@@ -762,7 +810,10 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             ui.label(strategy["name"]).classes("text-xl font-bold")
                             ui.label(strategy["description"])
                             if strategy["available"]:
-                                ui.button("创建 Bot", on_click=bot_dialog)
+                                ui.button(
+                                    "创建 Bot",
+                                    on_click=lambda sid=strategy["id"]: bot_dialog(strategy_id=sid),
+                                )
                             else:
                                 ui.badge("后续开放 · 当前未实现", color="grey")
                 with ui.tab_panel(accounts_tab).classes("p-0 gap-4"):

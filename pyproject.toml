@@ -45,5 +45,8 @@ ignore_missing_imports = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/perp_farming_bots"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"third_party/hummingbot" = "perp_farming_bots/third_party/hummingbot"
+
 [tool.hatch.metadata]
 allow-direct-references = true

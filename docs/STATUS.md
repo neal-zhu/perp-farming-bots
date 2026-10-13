@@ -26,13 +26,13 @@ Updated 2026-10-13 (Asia/Shanghai). The application now uses native exchange acc
 - Compact bot trading panels: fee-adjusted trading PnL is explicitly labeled as excluding funding; price PnL and fees remain visible. Two aligned position rows show account, native quantity, entry and forecast funding. Lifecycle controls stay prominent, edit/delete use the More menu, and full strategy/data details fold without losing state during refresh. Unknown values stay explicit and rounded negative zero is normalized.
 - Official points reads: only the RH account's own live total. Cumulative/weekly/referral statistics have been removed; Core own-live-points access is explicitly unsupported until verified. Separate two-minute read task, manual refresh, per-metric unknown/error/stale states and persistent cards. Distinct sources are not added or attributed to bots. Arcus points are explicitly deferred by product decision; no session-token configuration or points requests remain.
 - Actual account snapshots, stale/unavailable states, price PnL, explicit missing fees/funding/points, alerts and optional Telegram.
-- Native database schema 4 in app.live.db. Schema 2/3 migrates explicitly with scheduled reopening disabled for existing bots. Prior records in app.db are preserved and are not treated as native evidence.
+- Native database schema 5 in app.live.db; schema 4 adds grid tables without changing existing bot data. Schema 2/3 migrates explicitly with scheduled reopening disabled for existing bots. Prior records in app.db are preserved and are not treated as native evidence.
 - Local password-free access, with security/login design deferred by product decision.
 
 ## Validation
 
 - The updated Docker image built on Linux ARM64 and passed native-mode startup, homepage, catalog and empty-account HTTP checks.
-- 129 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
+- 153 automated tests passed, with ruff and mypy. Tests use isolated exchange doubles and independently constructed protocol fixtures, never production credentials.
 - Browser verification: the native account workbench and Arcus connection form render; no generated/demo account entry is present. Local HTTP home and health return 200 on port 8088.
 - Actual Arcus, Lighter RH and Lighter Core market catalogs and BTC books were read successfully with certificate verification enabled. Platform TLS uses the operating system trust store.
 - Actual public funding reads succeeded for all three profiles. Tests check fractional/percentage units, native market identity, timestamps, unknown data, editing/deleting restrictions and real UI form callbacks.
@@ -57,7 +57,15 @@ A user-controlled entry revealed a first-leg confirmation failure, followed by l
 - Complete long-range paginated order/fill history and WebSocket reconciliation.
 - Arcus points (deferred by product decision); Core own-live-points endpoint verification; bot-specific funding attribution; Lighter nonzero fee monetary accounting.
 - Hyperliquid/Binance native accounts and orders; additional venues.
-- Grid/scalping specification and implementation.
+- Exchange-resting grid execution and scalping specification/implementation.
 - Security/login design and release packaging validation on additional platforms.
 
 This is a single-process application with ordinary SQLite transactions. There is no distributed failover or claim of atomic cross-exchange fills.
+
+## Grid delivery (2026-10-13)
+
+Long, short and neutral price-triggered perpetual grids are implemented for the three native profiles. The form previews actual per-grid quantity, initial signed inventory and capped maximum notional; grid accounts/symbols are exclusive. Durable geometry and cursor, weighted owned inventory, actual turnover/PnL, pause/resume, allocated reduce-only close and original-order recovery reuse the existing native journal. Hummingbot pure geometry is adapted with Apache-2.0 attribution; full-engine integration is not claimed.
+
+Grid tests cover directional accumulation/reduction, neutral zero-before-reverse, interval boundaries, pause/resume, unknown and partial fills without resend, original synchronization, healthy restart, external inventory/orders, schema 4 preservation, locked geometry and budget validation. Tests send no venue orders. Funded grid acceptance remains user-controlled.
+
+Local release backed up schema 4 and preserved the existing live hedge bot’s parameters, state, allocated inventory, original orders/fills/operations, turnover and user-selected reopening deadline exactly. The grid chooser and three-direction form were checked in the actual browser without saving or running a grid. Wheel includes upstream license/notice; Docker packaging includes the same files.

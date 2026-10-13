@@ -12,12 +12,15 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from .grid import Grid, GridPreview
 from .markets import Markets, VenueRequestError
 from .models import (
     Bot,
     BotCreate,
     BotState,
     BotUpdate,
+    GridParameters,
+    HedgeParameters,
     MarketSpec,
     OrderIntent,
     OrderResult,
@@ -67,6 +70,7 @@ class Runtime:
     def __init__(self, store: Store, markets: Markets, accounts: Accounts):
         self.store, self.markets, self.accounts = store, markets, accounts
         self.points = Points(store, markets, accounts)
+        self.grid = Grid(self)
         self.guard = asyncio.Lock()
         self.task: asyncio.Task[None] | None = None
         self.last_tick: float | None = None
@@ -108,6 +112,8 @@ class Runtime:
                     try:
                         if bot.state == BotState.ATTENTION:
                             await self.sync(bot.id)
+                        elif bot.strategy == "grid" and bot.state in {BotState.WAITING, BotState.HOLDING}:
+                            await self.grid.tick(bot.id)
                         elif bot.state == BotState.WAITING:
                             await self.try_open(bot.id)
                         elif bot.state == BotState.HOLDING:
@@ -124,6 +130,10 @@ class Runtime:
     async def funding(self, bot_id: str) -> dict[str, Any]:
         bot = self.store.bot(bot_id)
         p = bot.parameters
+        if isinstance(p, GridParameters):
+            data = await self.markets.funding(self.store.connection(p.connection_id).provider, p.symbol)
+            return {"position": data.model_dump(mode="json")}
+        assert isinstance(p, HedgeParameters)
         long, short = await asyncio.gather(
             self.markets.funding(self.store.connection(p.long_connection_id).provider, p.symbol),
             self.markets.funding(self.store.connection(p.short_connection_id).provider, p.symbol),
@@ -162,8 +172,11 @@ class Runtime:
                     except ValueError as exc:
                         self.store.alert(str(exc), bot_id, "warning")
 
-    async def preview(self, value: BotCreate | BotUpdate | Bot) -> Preview:
+    async def preview(self, value: BotCreate | BotUpdate | Bot) -> Preview | GridPreview:
         p = value.parameters
+        if isinstance(p, GridParameters):
+            return await self.grid.preview(value)
+        assert isinstance(p, HedgeParameters)
         long, short = (
             self.store.connection(p.long_connection_id),
             self.store.connection(p.short_connection_id),
@@ -196,6 +209,8 @@ class Runtime:
         )
 
     def _direction_conflict(self, bot: Bot) -> None:
+        assert isinstance(bot.parameters, HedgeParameters)
+        self.store.check_grid_reservation(bot)
         desired = {bot.parameters.long_connection_id: "long", bot.parameters.short_connection_id: "short"}
         for position in self.store.positions():
             if position.symbol == bot.parameters.symbol and position.connection_id in desired:
@@ -232,6 +247,10 @@ class Runtime:
             return
         async with self.guard:
             bot = self.store.bot(bot_id)
+            if bot.strategy == "grid":
+                await self.grid.command(bot, action)
+                return
+            assert isinstance(bot.parameters, HedgeParameters)
             if action == "run":
                 if bot.state not in {BotState.READY, BotState.PAUSED}:
                     raise ValueError("当前状态无法运行，请先核实订单和持仓")
@@ -291,6 +310,9 @@ class Runtime:
         quantity: Decimal,
         reduce_only: bool,
         reference_price: Decimal,
+        *,
+        trigger_price: Decimal | None = None,
+        grid_bounds: tuple[Decimal, Decimal] | None = None,
     ) -> OrderResult:
         account = self.store.connection(connection_id)
         spec = await self.markets.spec(account.provider, bot.parameters.symbol)
@@ -299,9 +321,21 @@ class Runtime:
         book = await self.markets.book(account.provider, bot.parameters.symbol, refresh=True)
         if not book.fresh():
             raise ValueError("盘口已过期")
+        if grid_bounds is not None:
+            midpoint = (book.bids[0].price + book.asks[0].price) / 2
+            if not grid_bounds[0] <= midpoint <= grid_bounds[1]:
+                raise ValueError("下单前价格已离开网格区间，未提交订单")
+        if trigger_price is not None:
+            executable = book.vwap(side, quantity)
+            if (side == "buy" and executable > trigger_price) or (
+                side == "sell" and executable < trigger_price
+            ):
+                raise ValueError("价格已离开触发格线，未提交订单；请核实后恢复")
         slippage = bot.parameters.slippage_bps / 10000
         raw = reference_price * (1 + slippage if side == "buy" else 1 - slippage)
         price = bounded_price(raw, spec, side)
+        if trigger_price is not None:
+            price = min(price, trigger_price) if side == "buy" else max(price, trigger_price)
         if not reduce_only and (quantity < spec.min_quantity or quantity * price < spec.min_notional):
             raise ValueError("实际成交数量低于下一腿最小下单限制，保留持仓并告警")
         client_id = uuid.uuid4().hex if account.provider == Provider.ARCUS else str(secrets.randbits(47))
@@ -362,6 +396,7 @@ class Runtime:
     async def try_open(self, bot_id: str) -> bool:
         async with self.guard:
             bot = self.store.bot(bot_id)
+            assert isinstance(bot.parameters, HedgeParameters)
             if bot.state != BotState.WAITING:
                 return False
             if (
@@ -381,6 +416,7 @@ class Runtime:
                 return False
             try:
                 preview = await self.preview(bot)
+                assert isinstance(preview, Preview)
                 self._direction_conflict(bot)
                 if preview.spread_pct < bot.parameters.threshold_pct:
                     self.store.set_state(
@@ -440,6 +476,7 @@ class Runtime:
     async def try_reopen(self, bot_id: str) -> bool:
         async with self.guard:
             bot = self.store.bot(bot_id)
+            assert isinstance(bot.parameters, HedgeParameters)
             due = self.store.cycle(bot_id)["next_reopen_at"]
             if (
                 bot.state != BotState.HOLDING
@@ -499,6 +536,7 @@ class Runtime:
             self.store.alert(message, bot.id, "error")
             return
         if reopen:
+            assert isinstance(bot.parameters, HedgeParameters)
             wait = secrets.randbelow(bot.parameters.reopen_random_wait_seconds + 1)
             self.store.complete_reopen_close(bot.id, op_id, wait)
             self.store.alert(f"{bot.name} 定期平仓完成，等待下一轮价差条件", bot.id)
@@ -521,6 +559,9 @@ class Runtime:
                 self.store.apply_order_result(order["id"], result)
             if self._unresolved(bot_id):
                 self.store.set_state(bot_id, BotState.ATTENTION, "原订单尚未确认，已停止新动作")
+                return
+            if self.store.bot(bot_id).strategy == "grid":
+                self.grid.finish_sync(bot_id)
                 return
             # Synchronization records native evidence only. It never starts another leg.
             inventory = self.store.positions(bot_id)

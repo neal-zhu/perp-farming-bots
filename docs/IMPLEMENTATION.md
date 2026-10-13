@@ -33,8 +33,14 @@ Connect user-owned accounts through the application and verify private identity,
 - Long-range paginated native history and WebSocket reconciliation.
 - Lighter nonzero fee monetary accounting, actual funding payment attribution and official points.
 - Additional exchange account/execution adapters.
-- Grid/scalping: define their actual rules before implementing.
+- Resting-order grid and scalping: define rules and active-order/cancellation semantics before implementing.
 - Security/access design after the main flows, without preselecting passwords or Basic Auth.
 - Release packaging, upgrades and additional container architectures.
 
 Keep ordinary transactions and one application process. Do not pursue latency tuning, distributed infrastructure or exhaustive reliability work during this stage.
+
+## Price-triggered grid (2026-10-13)
+
+`grid.py` adds a single-account long/short/neutral planner and durable cursor. `hummingbot_grid.py` adapts the pinned public Distributions.linear with attribution; the full Hummingbot executor is a reference only. `grid_ui.py` supplies direction, range, grid count, notional budget and readonly preview. `GridBotCard` reuses trading metrics and controls but displays one actual net inventory.
+
+Grid orders reuse `_execute`, the official Lighter signer, Arcus signing, original-identity lookup, terminal fill accounting and reduce-only close. Grid additions support weighted inventory accumulation; hedge duplicate-entry rejection remains intact. Account/symbol reservations block cross-strategy mixing. Schema 5 only adds grid state/action tables to schema 4. Full/unknown/partial evidence controls cursor progression; recovered complete evidence pauses rather than trading again. Details: [GRID.md](GRID.md).

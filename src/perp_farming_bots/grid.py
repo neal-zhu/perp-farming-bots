@@ -1,0 +1,234 @@
+"""Price-triggered perpetual grid; execution and money evidence stay in the shared journal."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal
+
+from .hummingbot_grid import linear
+from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, StrictModel
+from .store import operations
+
+if TYPE_CHECKING:
+    from .runtime import Runtime
+
+
+class GridPreview(StrictModel):
+    source: str
+    levels: list[Decimal]
+    quantity_per_grid: Decimal
+    max_notional: Decimal
+    initial_quantity: Decimal  # Signed: positive long, negative short.
+    cursor: int
+    current_price: Decimal
+    inside_range: bool
+    execution: str = "price_triggered_ioc"
+
+
+def target_quantity(p: GridParameters, cursor: int, quantity: Decimal) -> Decimal:
+    if not 0 <= cursor <= p.grid_count:
+        raise ValueError("网格格线编号无效")
+    units = p.grid_count - cursor if p.direction == "long" else -cursor
+    if p.direction == "neutral":
+        units = p.grid_count // 2 - cursor
+    return units * quantity
+
+
+def signed_inventory(runtime: Runtime, bot_id: str) -> Decimal:
+    owned = runtime.store.positions(bot_id)
+    if len(owned) > 1:
+        raise ValueError("网格出现多个方向的分配仓位，需要核实")
+    return sum((p.quantity * (1 if p.role == "long" else -1) for p in owned), Decimal(0))
+
+
+class Grid:
+    def __init__(self, runtime: Runtime):
+        self.runtime = runtime
+
+    async def preview(self, value: BotCreate | BotUpdate | Bot) -> GridPreview:
+        from .runtime import bounded_price, quantity_floor
+
+        p = value.parameters
+        assert isinstance(p, GridParameters)
+        r = self.runtime
+        connection = r.store.connection(p.connection_id)
+        spec = await r.markets.spec(connection.provider, p.symbol)
+        book = await r.markets.book(connection.provider, p.symbol, refresh=True)
+        if not book.fresh():
+            raise ValueError("网格行情已过期")
+        low = bounded_price(p.lower_price, spec, "buy")
+        high = bounded_price(p.upper_price, spec, "sell")
+        levels = [bounded_price(price, spec, "buy") for price in linear(p.grid_count + 1, low, high)]
+        if low >= high or any(a >= b for a, b in zip(levels, levels[1:])) or levels[-1] > p.upper_price:
+            raise ValueError("区间过窄，按交易所价格精度无法生成独立格线；请扩大区间或减少格数")
+        max_units = p.grid_count // 2 if p.direction == "neutral" else p.grid_count
+        quantity = quantity_floor(p.budget_usd / levels[-1] / max_units, spec.quantity_step)
+        if quantity <= 0 or quantity < spec.min_quantity or quantity * levels[0] < spec.min_notional:
+            raise ValueError("每格金额低于交易所最小订单；请增加预算或减少格数")
+        midpoint = (book.asks[0].price + book.bids[0].price) / 2
+        cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
+        return GridPreview(
+            source=book.source,
+            levels=levels,
+            quantity_per_grid=quantity,
+            max_notional=quantity * max_units * levels[-1],
+            initial_quantity=target_quantity(p, cursor, quantity),
+            cursor=cursor,
+            current_price=midpoint,
+            inside_range=levels[0] <= midpoint <= levels[-1],
+        )
+
+    async def command(self, bot: Bot, action: str) -> None:
+        r, p = self.runtime, bot.parameters
+        assert isinstance(p, GridParameters)
+        if r.store.bot_pending(bot.id):
+            raise ValueError("网格有未确认订单或操作，请先同步原订单")
+        if action == "run":
+            if bot.state not in {BotState.READY, BotState.PAUSED}:
+                raise ValueError("当前状态无法运行网格，请先核实订单和持仓")
+            r.store.check_grid_reservation(bot)
+            await r._check_inventory(p.connection_id, p.symbol)
+            state = r.store.grid_state(bot.id)
+            if state is not None:
+                if not state["initialized"] or signed_inventory(r, bot.id) != target_quantity(
+                    p, state["cursor"], Decimal(state["quantity_per_grid"])
+                ):
+                    raise ValueError("网格成交数量未达到原目标；请平仓后新建 Bot，不会补单")
+                r.store.set_state(bot.id, BotState.HOLDING, "网格已恢复，继续等待原相邻格线")
+            else:
+                await self.preview(bot)
+                if r.accounts.snapshots[p.connection_id].available < p.budget_usd:
+                    raise ValueError("可用抵押资产不足以覆盖网格预算，请减少预算")
+                r.store.set_state(bot.id, BotState.WAITING, "等待区间内价格，随后建立初始网格仓位")
+        elif action == "pause":
+            if bot.state not in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION}:
+                raise ValueError("当前状态无需暂停")
+            r.store.set_state(bot.id, BotState.PAUSED, "网格已暂停；保留仓位和格线，运行后继续")
+        elif action == "close":
+            if r.store.positions(bot.id):
+                await r._close(bot)
+            else:
+                r.store.set_state(bot.id, BotState.CLOSED, "网格无分配仓位，已结束运行")
+        else:
+            raise ValueError("未知网格操作")
+
+    async def tick(self, bot_id: str) -> bool:
+        async with self.runtime.guard:
+            r = self.runtime
+            bot = r.store.bot(bot_id)
+            if bot.state not in {BotState.WAITING, BotState.HOLDING}:
+                return False
+            p = bot.parameters
+            assert isinstance(p, GridParameters)
+            op_id = None
+            try:
+                if r.store.bot_pending(bot.id):
+                    raise ValueError("网格有未确认操作，已停止新动作")
+                r.store.check_grid_reservation(bot)
+                # A grid exclusively owns this account/symbol. External inventory/orders block it.
+                await r._check_inventory(p.connection_id, p.symbol)
+                state = r.store.grid_state(bot.id)
+                trigger: Decimal | None = None
+                if state is None:
+                    preview = await self.preview(bot)
+                    if not preview.inside_range:
+                        r.store.set_state(bot.id, BotState.WAITING, "当前价格在网格区间外，等待进入区间")
+                        return False
+                    cursor, target = preview.cursor, preview.initial_quantity
+                    levels = preview.levels
+                    layout: dict[str, Any] | None = {
+                        "levels": preview.levels,
+                        "quantity_per_grid": preview.quantity_per_grid,
+                    }
+                    current = signed_inventory(r, bot.id)
+                else:
+                    if not state["initialized"]:
+                        raise ValueError("网格初始化尚未确认，请同步原订单")
+                    levels = [Decimal(v) for v in state["levels"]]
+                    quantity = Decimal(state["quantity_per_grid"])
+                    current = signed_inventory(r, bot.id)
+                    if current != target_quantity(p, state["cursor"], quantity):
+                        raise ValueError("网格分配仓位与格线状态不符，已停止新动作")
+                    book = await r.markets.book(
+                        r.store.connection(p.connection_id).provider, p.symbol, refresh=True
+                    )
+                    if not book.fresh():
+                        raise ValueError("网格行情已过期")
+                    midpoint = (book.bids[0].price + book.asks[0].price) / 2
+                    if not levels[0] <= midpoint <= levels[-1]:
+                        r.store.set_state(
+                            bot.id, BotState.HOLDING, "价格在网格区间外；保留仓位，等待回到区间"
+                        )
+                        return False
+                    cursor = state["cursor"]
+                    # Use executable bid/ask, not midpoint, to prevent spread-only triggers.
+                    if cursor > 0 and book.asks[0].price <= levels[cursor - 1]:
+                        cursor -= 1
+                    elif cursor < p.grid_count and book.bids[0].price >= levels[cursor + 1]:
+                        cursor += 1
+                    else:
+                        r.store.set_state(bot.id, BotState.HOLDING, "网格运行中，等待相邻格线")
+                        return False
+                    target, trigger, layout = target_quantity(p, cursor, quantity), levels[cursor], None
+                delta = target - current
+                if current and target and (current > 0) != (target > 0):
+                    raise ValueError("网格必须先确认零仓位，再切换方向")
+                reduce = bool(current) and abs(target) < abs(current)
+                if (
+                    not reduce
+                    and r.accounts.snapshots[p.connection_id].available < abs(delta) * p.upper_price
+                ):
+                    raise ValueError("可用抵押资产不足以覆盖本格订单")
+                op_id = r.store.begin_grid_action(bot.id, cursor, target, layout=layout)
+                if delta:
+                    side: Literal["buy", "sell"] = "buy" if delta > 0 else "sell"
+                    role = "long" if (current > 0 if reduce else delta > 0) else "short"
+                    book = await r.markets.book(
+                        r.store.connection(p.connection_id).provider, p.symbol, refresh=True
+                    )
+                    reference = book.vwap(side, abs(delta))
+                    result = await r._execute(
+                        bot,
+                        op_id,
+                        role,
+                        p.connection_id,
+                        side,
+                        abs(delta),
+                        reduce,
+                        reference,
+                        trigger_price=trigger,
+                        grid_bounds=(levels[0], levels[-1]),
+                    )
+                    if result.quantity != abs(delta):
+                        raise ValueError("本格订单未完全成交；保留实际仓位，停止后续动作，请平仓处理")
+                r.store.complete_grid_action(bot.id, op_id)
+                return True
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, ValueError) else "网格执行失败，请核实原订单"
+                if op_id is not None:
+                    r.store.finish_operation(
+                        op_id, "unknown" if r._unresolved(bot.id) else "attention", message
+                    )
+                r.store.set_state(bot.id, BotState.ATTENTION, message)
+                r.store.alert(message, bot.id, "error")
+                return False
+
+    def finish_sync(self, bot_id: str) -> None:
+        r = self.runtime
+        history = r.store.rows(operations, bot_id)
+        if not history:
+            return
+        latest = history[0]
+        if latest["kind"] == "close" and not r.store.positions(bot_id):
+            r.store.finish_operation(latest["id"], "completed", "网格原平仓订单已确认")
+            r.store.set_state(bot_id, BotState.CLOSED, "网格已确认平仓，结束运行")
+        elif latest["kind"] in {"grid_initial", "grid_step"} and latest["status"] in {
+            "pending",
+            "unknown",
+            "attention",
+        }:
+            try:
+                r.store.complete_grid_action(bot_id, latest["id"], recovered=True)
+            except ValueError as exc:
+                r.store.finish_operation(latest["id"], "attention", str(exc))
+                r.store.set_state(bot_id, BotState.ATTENTION, str(exc))

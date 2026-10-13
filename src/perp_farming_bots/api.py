@@ -120,6 +120,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
                     "positions": [p.model_dump(mode="json") for p in store.positions(bot.id)],
                     "editability": store.bot_editability(bot.id),
                     "cycle": store.cycle(bot.id),
+                    "grid": store.grid_state(bot.id),
                     "turnover": store.turnover(bot.id),
                 }
             )
@@ -136,6 +137,7 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
             "operations": store.rows(operations, bot_id),
             "editability": store.bot_editability(bot_id),
             "cycle": store.cycle(bot_id),
+            "grid": store.grid_state(bot_id),
             "turnover": store.turnover(bot_id),
         }
 

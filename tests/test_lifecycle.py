@@ -64,7 +64,7 @@ async def test_schema_two_stopped_bots_migrate_explicitly_without_changing_inven
         assert migrated.positions(bot.id) == original
         assert len(runtime.accounts.adapter(a.id).sent) == 1
         with migrated.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 4
+            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 5
     finally:
         migrated.close()
 
