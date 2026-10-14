@@ -56,17 +56,28 @@ def grid_dialog(
             .classes("w-full")
         )
         direction_help = ui.label().classes("text-sm text-slate-600")
+        startup_position = ui.switch("启动时建仓", value=p.open_position_on_start if p else False)
+        startup_help = ui.label().classes("text-xs text-slate-500")
 
         def explain():
+            if direction.value == "neutral" and startup_position.value:
+                startup_position.set_value(False)
+            startup_position.set_visibility(direction.value != "neutral")
             direction_help.set_text(
                 {
-                    "long": "下跌加多仓，上涨减多仓。运行时按当前价格建立初始多仓。",
-                    "short": "上涨加空仓，下跌减空仓。运行时按当前价格建立初始空仓。",
-                    "neutral": "区间中点为零仓位，下方做多、上方做空；经过中点先平仓，再反向建仓。",
+                    "long": "下跌买入多仓，上涨卖出已有多仓；空仓时不做空。",
+                    "short": "上涨卖出开空，下跌买回已有空仓；空仓时不做多。",
+                    "neutral": "从空仓开始，启动价下方做多、上方做空；先平仓，再反向建仓。",
                 }[direction.value]
+            )
+            startup_help.set_text(
+                "开启：运行时按当前价格建立底仓，可能一次成交多格数量；之后每次跨一格只买卖一份。"
+                if startup_position.value
+                else "关闭：运行时不建仓，等价格触发格线后逐格买卖。"
             )
 
         direction.on_value_change(explain)
+        startup_position.on_value_change(explain)
         explain()
         with ui.row().classes("w-full gap-4"):
             account = (
@@ -270,7 +281,14 @@ def grid_dialog(
             account.disable()
             symbol.disable()
         if not editable["entry_parameters"]:
-            entry_controls: list[DisableableElement] = [direction, lower, upper, count, range_button]
+            entry_controls: list[DisableableElement] = [
+                direction,
+                startup_position,
+                lower,
+                upper,
+                count,
+                range_button,
+            ]
             for entry_control in entry_controls:
                 entry_control.disable()
             ui.label("修改策略参数前请先暂停；仍有仓位需先平仓，未确认订单或操作需先处理。").classes(
@@ -308,6 +326,7 @@ def grid_dialog(
         for input_control in [
             account,
             direction,
+            startup_position,
             lower,
             upper,
             count,
@@ -328,6 +347,7 @@ def grid_dialog(
                     lower_price=Decimal(str(lower.value)),
                     upper_price=Decimal(str(upper.value)),
                     grid_count=int(count.value),
+                    open_position_on_start=startup_position.value,
                     capital=GridMarginCapital(
                         investment_usd=Decimal(str(budget.value)),
                         leverage=int(leverage.value),
@@ -357,6 +377,7 @@ def grid_dialog(
                 account,
                 symbol,
                 direction,
+                startup_position,
                 lower,
                 upper,
                 count,

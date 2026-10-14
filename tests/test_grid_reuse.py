@@ -202,6 +202,7 @@ async def test_closed_grid_can_edit_geometry_with_confirmed_history_but_not_chan
         parameters=bot.parameters.model_copy(
             update={
                 "direction": "neutral",
+                "open_position_on_start": False,
                 "lower_price": Decimal(59000),
                 "upper_price": Decimal(61000),
                 "grid_count": 6,

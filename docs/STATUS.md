@@ -8,6 +8,7 @@ Updated 2026-10-14 (Asia/Shanghai).
 - Cross-account spread hedging, including different accounts on one venue. The second leg is sized from the first leg's confirmed fill.
 - Optional timed hedge reopening, with a durable random delay of up to five minutes and spread checks before each entry.
 - Fixed arithmetic perpetual grids in long, short and neutral directions. Price-triggered IOC execution requires the program to remain online.
+- Optional startup positions for long/short grids, disabled by default in new forms. Neutral grids start flat. A durable zero-inventory origin supports fixed-grid accumulation/reduction, pause and restart without bulk reentry.
 - Grid sizing by investment-margin budget, integer leverage and cross/isolated mode. Save validates native rules, minimum orders, collateral and inventory; Run confirms native settings before activation.
 - Per-bot allocated positions, real fills, confirmed turnover, trading PnL, fees and separate funding forecasts. Unknown values remain explicit.
 - Run, Pause and Close controls, parameter editing and confirmed deletion. Flat paused/closed grids can change strategy parameters. Historical execution fixes account/symbol bindings.
@@ -15,7 +16,7 @@ Updated 2026-10-14 (Asia/Shanghai).
 - Temporary quote outages skip trading and retain the selected running state. Uncertain orders or partial inventory block new actions until resolved.
 - Robinhood account points sampling every two minutes and 24-hour, seven-day and 30-day history curves. Missing samples remain gaps.
 - Persistent panels with local updates, inline form validation, in-app alerts and optional Telegram notifications. Saved grids explicitly show Ready and the Run action; ungenerated trigger lines are not presented as an initialization in progress.
-- Database format 7. Grid capital has one structure: investment, leverage and margin mode. Unsupported database/configuration formats fail explicitly; no conversion branches are included.
+- Database format 8. Grid capital has one structure: investment, leverage and margin mode. Unsupported database/configuration formats fail explicitly; no conversion branches are included.
 
 ## Validation
 

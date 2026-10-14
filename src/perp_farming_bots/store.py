@@ -171,6 +171,7 @@ grid_states = Table(
     metadata,
     Column("bot_id", String, primary_key=True),
     Column("cursor", Integer, nullable=False),
+    Column("zero_inventory_cursor", Integer, nullable=False),
     Column("quantity_per_grid", String, nullable=False),
     Column("levels", Text, nullable=False),
     Column("initialized", Integer, nullable=False),
@@ -207,8 +208,8 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 7}:
-                raise ValueError(f"Unsupported database schema version {version}; expected 7")
+            if version not in {0, 8}:
+                raise ValueError(f"Unsupported database schema version {version}; expected 8")
             if (
                 version == 0
                 and db.exec_driver_sql(
@@ -219,7 +220,7 @@ class Store:
                 raise ValueError("Database has no schema version; use a new database")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            db.exec_driver_sql("PRAGMA user_version=7")
+            db.exec_driver_sql("PRAGMA user_version=8")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -638,6 +639,7 @@ class Store:
                     insert(grid_states).values(
                         bot_id=bot_id,
                         cursor=cursor,
+                        zero_inventory_cursor=layout["zero_inventory_cursor"],
                         quantity_per_grid=str(layout["quantity_per_grid"]),
                         levels=json.dumps([str(p) for p in layout["levels"]]),
                         initialized=0,
@@ -693,6 +695,7 @@ class Store:
 
     def complete_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> None:
         with self.transaction() as db:
+            kind = db.execute(select(operations.c.kind).where(operations.c.id == op_id)).scalar_one()
             action = (
                 db.execute(select(grid_actions).where(grid_actions.c.operation_id == op_id)).mappings().one()
             )
@@ -720,7 +723,14 @@ class Store:
                 )
             )
             self.finish_operation(
-                op_id, "completed", "原订单已确认；等待手动恢复" if recovered else "本格实际成交已确认", db
+                op_id,
+                "completed",
+                "原订单已确认；等待手动恢复"
+                if recovered
+                else "网格初始化完成"
+                if kind == "grid_initial"
+                else "本格实际成交已确认",
+                db,
             )
             self.set_state(
                 bot_id,

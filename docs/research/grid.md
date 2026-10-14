@@ -33,3 +33,5 @@ Checked official documentation on 2026-10-13:
 - [Trailing Up / Trailing Down](https://www.binance.com/en/support/faq/detail/7a7bb22420404385991dee3a0930207d) is an optional mode that moves the range when its trailing conditions are met; it requires explicit trailing limits. Fixed geometry and exchange-resting order execution are separate choices.
 
 This application currently retains fixed geometry but submits IOC only after an executable quote triggers a level. It is not Binance-style resting-order execution and has no trailing-range option. No Binance source code was copied.
+
+The [Binance long/short grid guide](https://www.binance.com/en/support/faq/detail/904e47602a3941b99e960a31e152a986) documents an optional initial position. With it disabled, long grids begin with buy orders below their start price and short grids with sell orders above it. This application implements those directional rules through a persistent zero-inventory grid origin and single-unit IOC triggers; it does not claim exchange-resting order behavior.

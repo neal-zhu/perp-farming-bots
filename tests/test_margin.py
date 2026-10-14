@@ -237,6 +237,7 @@ async def test_margin_grid_save_checks_collateral_not_notional_and_never_changes
             connection_id=account.id,
             symbol="BTC",
             direction="neutral",
+            open_position_on_start=False,
             lower_price=58000,
             upper_price=62000,
             grid_count=4,

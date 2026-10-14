@@ -6,6 +6,7 @@ from typing import Any
 from nicegui import ui
 
 from .formatting import grid_capital_text, money, pnl_money, rate, stamp
+from .grid import target_quantity
 from .models import (
     GRID_DIRECTION_NAMES,
     PROVIDER_NAMES,
@@ -356,7 +357,7 @@ class GridBotCard(BotCard):
             f"累计已确认成交额 {money(volume['confirmed_usd'])} · 包含初始建仓、每格成交和平仓"
         )
         self.parameters.set_text(
-            f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · {grid_capital_text(p)} · 滑点上限 {rate(p.slippage_bps / 100)}"
+            f"区间 {money(p.lower_price)}–{money(p.upper_price)} · {p.grid_count} 格 · {grid_capital_text(p)} · {'启动时建仓' if p.open_position_on_start else '启动不建仓'} · 滑点上限 {rate(p.slippage_bps / 100)}"
         )
         self.realized.set_text(f"已实现价格盈亏 {pnl_money(pnl['realized'])}")
         self.reason.set_text(
@@ -364,11 +365,24 @@ class GridBotCard(BotCard):
             if bot.state == BotState.ATTENTION
             else f"状态说明：{bot.reason}"
         )
-        schedule = "价格触发 · 需程序在线 · 运行后按当前价格建立初始仓位"
+        schedule = "价格触发 · 需程序在线 · " + (
+            "启动时建立底仓" if p.open_position_on_start else "启动不建仓，等待格线触发"
+        )
         if state is not None:
             levels, cursor = state["levels"], state["cursor"]
-            buys = money(levels[cursor - 1]) if cursor > 0 else "区间下沿"
-            sells = money(levels[cursor + 1]) if cursor < p.grid_count else "区间上沿"
+            q = Decimal(state["quantity_per_grid"])
+            anchor = state["zero_inventory_cursor"]
+            current = target_quantity(p, cursor, q, anchor)
+            buys = (
+                money(levels[cursor - 1])
+                if cursor > 0 and target_quantity(p, cursor - 1, q, anchor) != current
+                else "暂无买入"
+            )
+            sells = (
+                money(levels[cursor + 1])
+                if cursor < p.grid_count and target_quantity(p, cursor + 1, q, anchor) != current
+                else "暂无卖出"
+            )
             schedule = f"每格 {state['quantity_per_grid']} {p.symbol} · 下格买入 {buys} · 上格卖出 {sells}"
         self.reopen_status.set_text(schedule)
         position = positions[0] if len(positions) == 1 else None
@@ -414,12 +428,13 @@ class GridBotCard(BotCard):
         self.match.classes(replace="pfb-match pfb-match--unknown" if pending else "pfb-match pfb-match--good")
         self.update_pnl(pnl)
         signed = position.quantity * (1 if role == "long" else -1) if position else Decimal(0)
-        from .grid import target_quantity
-
         aligned = (
             state is None
             or state["initialized"]
-            and signed == target_quantity(p, state["cursor"], Decimal(state["quantity_per_grid"]))
+            and signed
+            == target_quantity(
+                p, state["cursor"], Decimal(state["quantity_per_grid"]), state["zero_inventory_cursor"]
+            )
         )
         can_restart = bot.state == BotState.CLOSED and not positions and not pending
         self.buttons["run"].set_text("重新运行" if bot.state == BotState.CLOSED else "运行")

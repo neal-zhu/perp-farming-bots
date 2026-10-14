@@ -141,6 +141,7 @@ class GridParameters(StrictModel):
     lower_price: Decimal = Field(gt=0, allow_inf_nan=False)
     upper_price: Decimal = Field(gt=0, allow_inf_nan=False)
     grid_count: int = Field(ge=2, le=100, strict=True)
+    open_position_on_start: bool = Field(strict=True)
     capital: GridMarginCapital
     slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
 
@@ -156,7 +157,9 @@ class GridParameters(StrictModel):
         if self.lower_price >= self.upper_price:
             raise ValueError("价格下限必须低于上限")
         if self.direction == "neutral" and self.grid_count % 2:
-            raise ValueError("中性网格需要偶数格，区间中点为零仓位")
+            raise ValueError("中性网格需要偶数格")
+        if self.direction == "neutral" and self.open_position_on_start:
+            raise ValueError("中性网格从空仓开始，不支持启动时建仓")
         if self.notional_limit > Decimal("1000000"):
             raise ValueError("保证金乘以杠杆后的最大名义仓位不得超过 1,000,000 USD")
         return self

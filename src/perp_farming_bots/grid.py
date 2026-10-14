@@ -21,6 +21,8 @@ class GridPreview(StrictModel):
     max_notional: Decimal
     initial_quantity: Decimal  # Signed: positive long, negative short.
     cursor: int
+    zero_inventory_cursor: int
+    can_initialize: bool
     current_price: Decimal
     inside_range: bool
     minimum_collateral: Decimal
@@ -32,12 +34,14 @@ class GridPreview(StrictModel):
     execution: str = "price_triggered_ioc"
 
 
-def target_quantity(p: GridParameters, cursor: int, quantity: Decimal) -> Decimal:
-    if not 0 <= cursor <= p.grid_count:
+def target_quantity(p: GridParameters, cursor: int, quantity: Decimal, zero_inventory_cursor: int) -> Decimal:
+    if not 0 <= cursor <= p.grid_count or not 0 <= zero_inventory_cursor <= p.grid_count:
         raise ValueError("网格格线编号无效")
-    units = p.grid_count - cursor if p.direction == "long" else -cursor
-    if p.direction == "neutral":
-        units = p.grid_count // 2 - cursor
+    units = zero_inventory_cursor - cursor
+    if p.direction == "long":
+        units = max(0, units)
+    elif p.direction == "short":
+        units = min(0, units)
     return units * quantity
 
 
@@ -69,7 +73,19 @@ class Grid:
         levels = [bounded_price(price, spec, "buy") for price in linear(p.grid_count + 1, low, high)]
         if low >= high or any(a >= b for a, b in zip(levels, levels[1:])) or levels[-1] > p.upper_price:
             raise ValueError("区间过窄，按交易所价格精度无法生成独立格线；请扩大区间或减少格数")
-        max_units = p.grid_count // 2 if p.direction == "neutral" else p.grid_count
+        await r._check_inventory(p.connection_id, p.symbol)
+        account = r.accounts.snapshots[p.connection_id]
+        book = await r.markets.book(connection.provider, p.symbol, refresh=True)
+        require_fresh_book(book)
+        midpoint = (book.asks[0].price + book.bids[0].price) / 2
+        cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
+        anchor = p.grid_count if p.direction == "long" else 0
+        if not p.open_position_on_start:
+            anchor = cursor
+        max_units = max(anchor, p.grid_count - anchor) if p.direction == "neutral" else p.grid_count
+        available_units = anchor if p.direction == "long" else p.grid_count - anchor
+        if p.direction == "neutral":
+            available_units = max_units
         minimum_quantity = (
             max(spec.quantity_step, spec.min_quantity, spec.min_notional / levels[0]) / spec.quantity_step
         ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
@@ -83,25 +99,20 @@ class Grid:
                 f"按此区间和 {p.grid_count} 格，保证金额度至少 ${minimum_budget_cents:,.2f}，"
                 f"每格至少 {minimum_quantity} {p.symbol}。请先核对币种和价格区间，再调整格数或预算。"
             )
-        await r._check_inventory(p.connection_id, p.symbol)
-        account = r.accounts.snapshots[p.connection_id]
         if account.available < p.collateral_budget:
             raise ValueError(
                 f"账户可用余额 ${account.available:,.2f}，低于网格资金预算 ${p.collateral_budget:,.2f}。"
                 f"当前格数和区间最低预算 ${minimum_budget_cents:,.2f}；请调整预算或格数。"
             )
-        # Fetch the quote after funds/ownership checks so their latency cannot age it out.
-        book = await r.markets.book(connection.provider, p.symbol, refresh=True)
-        require_fresh_book(book)
-        midpoint = (book.asks[0].price + book.bids[0].price) / 2
-        cursor = min(range(len(levels)), key=lambda i: abs(levels[i] - midpoint))
         return GridPreview(
             source=book.source,
             levels=levels,
             quantity_per_grid=quantity,
-            max_notional=quantity * max_units * levels[-1],
-            initial_quantity=target_quantity(p, cursor, quantity),
+            max_notional=quantity * available_units * levels[-1],
+            initial_quantity=target_quantity(p, cursor, quantity, anchor),
             cursor=cursor,
+            zero_inventory_cursor=anchor,
+            can_initialize=available_units > 0,
             current_price=midpoint,
             inside_range=levels[0] <= midpoint <= levels[-1],
             minimum_collateral=minimum_budget,
@@ -132,7 +143,7 @@ class Grid:
             state = r.store.grid_state(bot.id)
             if state is not None:
                 if not state["initialized"] or signed_inventory(r, bot.id) != target_quantity(
-                    p, state["cursor"], Decimal(state["quantity_per_grid"])
+                    p, state["cursor"], Decimal(state["quantity_per_grid"]), state["zero_inventory_cursor"]
                 ):
                     raise ValueError("网格成交数量未达到原目标；请平仓后新建 Bot，不会补单")
                 await r.margin.verify(p)
@@ -143,7 +154,7 @@ class Grid:
             else:
                 await self.preview(bot)
                 await r.margin.configure(bot)
-                r.store.set_state(bot.id, BotState.WAITING, "等待区间内价格，随后建立初始网格仓位")
+                r.store.set_state(bot.id, BotState.WAITING, "等待区间内价格，随后初始化网格")
         elif action == "pause":
             if bot.state not in {BotState.WAITING, BotState.HOLDING, BotState.ATTENTION}:
                 raise ValueError("当前状态无需暂停")
@@ -179,11 +190,17 @@ class Grid:
                     if not preview.inside_range:
                         r.store.set_state(bot.id, BotState.WAITING, "当前价格在网格区间外，等待进入区间")
                         return False
+                    if not preview.can_initialize:
+                        r.store.set_state(
+                            bot.id, BotState.WAITING, "当前价附近没有可开仓格线，等待价格进入可交易位置"
+                        )
+                        return False
                     cursor, target = preview.cursor, preview.initial_quantity
                     levels = preview.levels
                     layout: dict[str, Any] | None = {
                         "levels": preview.levels,
                         "quantity_per_grid": preview.quantity_per_grid,
+                        "zero_inventory_cursor": preview.zero_inventory_cursor,
                     }
                     current = signed_inventory(r, bot.id)
                 else:
@@ -192,7 +209,9 @@ class Grid:
                     levels = [Decimal(v) for v in state["levels"]]
                     quantity = Decimal(state["quantity_per_grid"])
                     current = signed_inventory(r, bot.id)
-                    if current != target_quantity(p, state["cursor"], quantity):
+                    if current != target_quantity(
+                        p, state["cursor"], quantity, state["zero_inventory_cursor"]
+                    ):
                         raise ValueError("网格分配仓位与格线状态不符，已停止新动作")
                     book = await r.markets.book(
                         r.store.connection(p.connection_id).provider, p.symbol, refresh=True
@@ -213,7 +232,13 @@ class Grid:
                     else:
                         r.store.set_state(bot.id, BotState.HOLDING, "网格运行中，等待相邻格线")
                         return False
-                    target, trigger, layout = target_quantity(p, cursor, quantity), levels[cursor], None
+                    target = target_quantity(p, cursor, quantity, state["zero_inventory_cursor"])
+                    if target == current:
+                        r.store.set_state(
+                            bot.id, BotState.HOLDING, "当前空仓，等待开仓方向的格线；不反向开仓"
+                        )
+                        return False
+                    trigger, layout = levels[cursor], None
                 delta = target - current
                 if current and target and (current > 0) != (target > 0):
                     raise ValueError("网格必须先确认零仓位，再切换方向")

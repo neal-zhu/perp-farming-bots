@@ -220,7 +220,11 @@ class GridMonitor(StrategyMonitor):
             self.explanation.set_text(
                 f"价格区间 {money(p.lower_price)} – {money(p.upper_price)} · {p.grid_count} 格。"
                 + (
-                    "点击“运行”启动策略，按当前价格确定初始仓位。"
+                    (
+                        "点击“运行”启动策略，按当前格位建立底仓，可能一次成交多格数量。"
+                        if p.open_position_on_start
+                        else "点击“运行”初始化格线，从空仓等待价格触发。"
+                    )
                     if bot.state == BotState.READY and not pending
                     else bot.reason
                 )
@@ -233,9 +237,15 @@ class GridMonitor(StrategyMonitor):
             return
         levels = [Decimal(v) for v in state["levels"]]
         cursor, quantity = state["cursor"], Decimal(state["quantity_per_grid"])
+        anchor = state["zero_inventory_cursor"]
         for slot, index, side in ((1, cursor - 1, "buy"), (2, cursor + 1, "sell")):
-            valid = 0 <= index < len(levels)
-            self.values[slot].set_text(money(levels[index]) if valid else "已到区间边界")
+            in_range = 0 <= index < len(levels)
+            valid = in_range and target_quantity(p, index, quantity, anchor) != target_quantity(
+                p, cursor, quantity, anchor
+            )
+            self.values[slot].set_text(
+                money(levels[index]) if valid else "暂无买入" if side == "buy" else "暂无卖出"
+            )
             reference = book.asks[0].price if book and side == "buy" else book.bids[0].price if book else None
             distance = (
                 ((reference - levels[index]) if side == "buy" else (levels[index] - reference))
@@ -289,8 +299,8 @@ class GridMonitor(StrategyMonitor):
         else:
             status = "等待价格触发"
             explanation = (
-                "当前为空仓：中性网格在中间格的目标仓位为 0，下一次交易需触发相邻格线。"
-                if not positions and p.direction == "neutral" and cursor == p.grid_count // 2
+                "当前为空仓：启动格位的目标仓位为 0，等待相邻格线触发；做多不做空，做空不做多。"
+                if not positions and cursor == anchor
                 else "到达下一格后提交订单；按实际成交推进格线，不补造成交。"
             )
         self.status.set_text(status)
@@ -315,8 +325,13 @@ class GridMonitor(StrategyMonitor):
                 row.status.set_text("基准格线")
             else:
                 origin = index + 1 if side == "buy" else index - 1
-                before = target_quantity(p, origin, quantity)
-                after = target_quantity(p, index, quantity)
+                before = target_quantity(p, origin, quantity, anchor)
+                after = target_quantity(p, index, quantity, anchor)
+                if before == after:
+                    row.action.set_text("无交易计划")
+                    row.quantity.set_text("—")
+                    row.status.set_text("该格位没有持仓变化")
+                    continue
                 reducing = abs(after) < abs(before)
                 effect = (
                     "平仓"
