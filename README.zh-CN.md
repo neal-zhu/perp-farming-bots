@@ -1,14 +1,57 @@
 # Perp Farming Bots
 
-[English](README.md) · [使用指南](docs/guide.zh-CN.md) · [文档目录](docs/README.md)
+[English](README.md) · [新手使用指南](docs/guide.zh-CN.md) · [完整文档](docs/README.md)
 
-一个自托管的永续交易 Bot 工具。通过浏览器连接自己的交易所账户、创建多个 Bot，查看各自的持仓、成交、盈亏和累计成交额，不需要编写策略代码。页面为简体中文。
+**想参与永续交易所的积分活动，又不想每天手动开仓、平仓、来回切换几个网站？**
 
-目前提供两种策略：**跨账户价差对冲**与**做多、做空、中性永续网格**。支持同一交易所的多个账户实例，例如两个 Arcus 子账户之间对冲。
+Perp Farming Bots 是一个免费开源的交易工具。你在中文页面里连接自己的账户，选好策略和金额，让 Bot 执行重复的交易步骤，并在一个地方查看成交额、手续费、盈亏和已接入的积分数据。**使用策略不需要写代码。**
 
-## 启动
+程序由你运行在自己的电脑或服务器上，交易使用你自己的交易所账户，API Key 保存在本地。
 
-安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Git，然后执行：
+## 它能帮你做什么
+
+| 你想做的事 | 工具怎么帮你 |
+| --- | --- |
+| 两个账户配合交易 | 一个账户做多，另一个做空；你分别选择账户、合约和金额，达到设定价差后建仓 |
+| 定期重复建仓和平仓 | 设置持仓间隔，双腿平仓确认后随机等待，再按原条件建仓 |
+| 让价格区间内的买卖自动执行 | 做多、做空或中性网格，按价格变化分批买卖 |
+| 看清交易花了多少、发生了什么 | 每个 Bot 单独显示持仓、成交记录、累计成交额、手续费和交易盈亏 |
+| 回头看积分有没有变化 | 自动记录 Lighter Robinhood 账户积分，查看历史曲线 |
+| 同时管理几个账户 | 支持多个 Bot，同一交易所也可以连接多个不同账户 |
+
+一个 **Bot** 就是一份独立的自动交易任务，有自己的账户选择、策略参数和交易记录。你可以同时创建多个 Bot。
+
+积分是否计入、怎样分配及是否有空投，由各平台的活动规则决定；本工具不承诺积分或空投收益。
+
+## 从哪里开始
+
+目前支持 Arcus、Lighter Core、Lighter Robinhood 和 Entropy 的交易接入。首次使用可以先选一个已有账户的平台。
+
+下面是维护者提供的邀请链接；使用这些链接会涉及平台的推荐关系，具体按平台邀请规则执行。
+
+| 平台 | 进入平台 | 邀请码 |
+| --- | --- | --- |
+| Arcus | [通过邀请链接打开 Arcus](https://app.arcus.xyz/ref/NEAL) | `NEAL` |
+| Entropy | [通过邀请链接打开 Entropy](https://entropy.io/?r=deltawillow2039) | `deltawillow2039` |
+| Lighter Robinhood | [通过邀请链接打开 Lighter Robinhood](https://robinhoodchain.lighter.xyz/?referral=9264234S&source=none) | `9264234S` |
+
+邀请链接是可选的。程序不会自动替你注册、绑定邀请码或提交钱包授权。
+
+## 开始使用只需要这几步
+
+1. **启动工具。** 按下面的安装步骤，在自己的电脑或服务器启动程序。
+2. **连接账户。** 在平台创建交易 API Key，再到“账户实例”填写账户信息。具体填写方法见 [新手使用指南](docs/guide.zh-CN.md#连接账户)。
+3. **创建 Bot。** 选择对冲或网格，填写账户、合约、交易金额等参数。
+4. **点击运行。** 保存只是记住参数，点击“运行”后才开始执行策略。
+5. **查看结果。** 在 Bot 页面看成交和盈亏，在积分页面看已接入的账户积分。可以暂停策略或关闭该 Bot 的仓位。
+
+**目前自动采集的是 Lighter Robinhood 账户积分。** Arcus、Lighter Core 和 Entropy 的积分查询尚未接入，可以到各平台官网查看。交易支持范围与积分查询支持范围分别见 [平台接入说明](docs/exchanges.md)。
+
+![中文策略页面](docs/assets/strategies.png)
+
+## 安装与启动
+
+首次安装需要打开终端执行下面的命令；之后通过浏览器操作，不需要编写交易策略。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Git：
 
 ```bash
 git clone https://github.com/neal-zhu/perp-farming-bots.git
@@ -17,42 +60,23 @@ uv sync --frozen
 uv run perp-farming-bots
 ```
 
-打开 **http://127.0.0.1:8080**。依次连接账户、创建 Bot、点击“运行”。保存参数本身不会启动交易。
+打开 **http://127.0.0.1:8080**，开始连接账户。
 
-也可以使用 Docker Compose：
+已经安装 Docker 的用户，也可以在项目目录运行：
 
 ```bash
 docker compose up --build -d
 ```
 
-**目前没有登录认证，仅供本机访问。** 默认地址和 Compose 端口均限制在本机。端口、服务器访问、备份和重启方法见 [运维说明](docs/operations.md)。
+程序需要持续在线，关闭浏览器不影响运行。网格是在价格触发时提交订单，需要程序持续监测；不会提前在交易所挂出整套网格订单。
 
-## 支持范围
+当前页面和 API 没有登录认证，默认仅供本机访问。服务器使用方式、备份和重启见 [运维说明](docs/operations.md)。
 
-交易接入：Arcus、Lighter Core、Lighter Robinhood、Entropy。合约列表直接读取交易所当前可用的永续市场，支持搜索。
+## 想进一步了解
 
-- 对冲：两个不同账户分别选择 ticker，设置价差条件和单侧目标金额；可定期平仓后重新等待建仓条件。
-- 网格：一个账户，设置方向、固定价格区间、格数、保证金额度、杠杆和保证金模式。程序等待价格触发后提交 IOC 订单，需要持续在线。
-- 积分：当前采集 Lighter Robinhood 自己账户的实时积分，提供历史曲线。其他平台显示“暂未接入”。
-- Entropy：使用主交易账户地址和 API 代理密钥；支持主市场和 Entropy 的 `io:*` 合约；暂不支持统一/组合保证金、子账户和 Vault。
+- [新手使用指南](docs/guide.zh-CN.md)：账户填写、策略选择、参数解释、暂停和平仓。
+- [对冲策略](docs/hedging.md) / [网格规则](docs/GRID.md)：详细运行规则。
+- [平台接入说明](docs/exchanges.md)：账户类型、积分及费用数据的支持范围。交易盈亏暂不包含实际资金费。
+- [反馈问题](https://github.com/neal-zhu/perp-farming-bots/issues)：附上操作步骤和去掉敏感信息的截图。
 
-完整的账户填写方法、保证金计算、初始建仓、暂停与平仓、故障处理见 [使用指南](docs/guide.zh-CN.md)。
-
-![策略库](docs/assets/strategies.png)
-
-## 数据与执行
-
-订单先记账再发送；结果不明时查询原订单，不重复下单。临时读取失败会重试，持续 5 分钟不可用才暂停。暂停保留仓位，平仓仅处理所选 Bot 的分配数量。
-
-交易盈亏扣除已确认手续费，暂不包含实际资金费。积分和资金费率预估单独展示，未知数据不会填成 0。自动化测试不等于各交易所已经完成实盘验收，也不代表积分奖励资格。
-
-运行数据与本地加密密钥保存在 `data/`，不进入 Git。程序使用本地 SQLite，无需另外安装数据库。
-
-## 开发与贡献
-
-```bash
-make check
-make test
-```
-
-开发者和 coding agent 从 [AGENTS.md](AGENTS.md)、[贡献指南](CONTRIBUTING.md) 和 [代码导航](docs/development.md) 开始。协议依据和复用来源登记在 [UPSTREAMS.md](UPSTREAMS.md)。应用代码使用 Apache-2.0 许可证。
+开发者和 coding agent 从 [AGENTS.md](AGENTS.md)、[贡献指南](CONTRIBUTING.md) 和 [代码导航](docs/development.md) 开始。应用代码使用 Apache-2.0 许可证，复用来源见 [UPSTREAMS.md](UPSTREAMS.md)。

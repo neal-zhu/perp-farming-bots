@@ -1,14 +1,57 @@
 # Perp Farming Bots
 
-[简体中文](README.zh-CN.md) · [User guide](docs/guide.zh-CN.md) · [Documentation](docs/README.md)
+[简体中文 / 新手指南](README.zh-CN.md) · [User guide](docs/guide.zh-CN.md) · [Documentation](docs/README.md)
 
-A self-hosted dashboard for perpetual trading bots. Connect your own exchange accounts, configure a built-in strategy, and track each bot's positions, fills, trading PnL and turnover. The web interface is currently in Simplified Chinese.
+**Want to participate in perp DEX points programs without manually opening and closing positions across several websites?**
 
-The application supports **cross-account spread hedging** and **long, short and neutral grids**. Multiple bots and multiple accounts on the same exchange are supported. Account points are sampled separately from bot trading results.
+Perp Farming Bots is a free, open-source trading tool with a Simplified Chinese interface. Connect your own accounts, choose a built-in strategy and amount, and let a bot handle repeated trading steps. See turnover, confirmed fees, trading PnL and supported points data in one place. You do not need to write strategy code.
 
-## Quick start
+Run it on your own computer or server. Trades use your exchange accounts, and API keys are stored locally.
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git. Python 3.12 is selected by the repository configuration.
+## What it helps you do
+
+| Your goal | Included tools |
+| --- | --- |
+| Trade with two accounts | Open a long on one account and a short on another when your spread condition is met; select each contract independently |
+| Repeat a trading cycle | Close a confirmed pair after a set holding interval, wait a bounded random delay, then check the entry condition again |
+| Automate buys and sells within a price range | Long, short and neutral grids that trade in increments as prices reach your grid lines |
+| Understand activity and trading costs | Per-bot positions, fills, cumulative turnover, confirmed fees and trading PnL |
+| Look back at points changes | Automatic Lighter Robinhood account points collection and historical charts |
+| Manage several accounts | Multiple bots and multiple account instances on the same venue |
+
+A **bot** is one independent trading task with its own account selection, settings and trade history. You can create more than one.
+
+Points allocation and eligibility follow each venue's program rules. The tool does not promise points or airdrop returns.
+
+## Supported platforms and invitation links
+
+Trading integrations are available for Arcus, Lighter Core, Lighter Robinhood and Entropy. These optional invitation links are provided by the project maintainer; any referral relationship follows the platform's rules.
+
+| Platform | Invitation link | Code |
+| --- | --- | --- |
+| Arcus | [Open Arcus](https://app.arcus.xyz/ref/NEAL) | `NEAL` |
+| Entropy | [Open Entropy](https://entropy.io/?r=deltawillow2039) | `deltawillow2039` |
+| Lighter Robinhood | [Open Lighter Robinhood](https://robinhoodchain.lighter.xyz/?referral=9264234S&source=none) | `9264234S` |
+
+The application does not automatically register users, bind referral codes or create wallet approvals.
+
+**Automatic points collection currently covers Lighter Robinhood only.** Arcus, Core and Entropy points queries are not integrated. Trading support and points-query support are described separately in [exchange scope](docs/exchanges.md).
+
+## Your first bot
+
+1. Start the application using the installation steps below.
+2. Create a trading API key on your venue and connect the account in **账户实例** (Accounts).
+3. Choose hedging or grid and enter your accounts, contracts and amounts.
+4. Click **运行** (Run). Saving parameters alone does not start trading.
+5. Review fills, turnover and PnL; use **暂停** (Pause) to retain positions or **平仓** (Close) to close that bot's allocated inventory.
+
+Detailed account instructions and parameter explanations: [Chinese beginner guide](docs/guide.zh-CN.md).
+
+![Built-in strategies in the Chinese interface](docs/assets/strategies.png)
+
+## Install and start
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git. Initial setup uses the terminal; strategy configuration then happens in the browser.
 
 ```bash
 git clone https://github.com/neal-zhu/perp-farming-bots.git
@@ -17,49 +60,25 @@ uv sync --frozen
 uv run perp-farming-bots
 ```
 
-Open **http://127.0.0.1:8080**. Connect an account, create a bot and click **运行** (Run). Saving a configuration does not start trading.
+Open **http://127.0.0.1:8080**. Python 3.12 is selected by the repository configuration.
 
-Docker Compose is an alternative:
+If you already use Docker, run this from the checkout:
 
 ```bash
 docker compose up --build -d
 ```
 
-The default setup is local only. **The UI and API have no authentication**; keep the localhost binding. Details, configuration, backups and server access: [Operations](docs/operations.md).
+Keep the application running. Closing the browser does not stop bots. Grids trade when prices reach a line and need the program online; they are not a full set of resting exchange orders.
 
-## Available integrations
+The UI and API currently have no authentication. Keep the default localhost binding; use the documented SSH tunnel for a remote server. Configuration, backups and restarting: [Operations](docs/operations.md).
 
-| Venue | Trading | Account points |
-| --- | --- | --- |
-| Arcus | Native perpetual account and IOC execution | Not integrated |
-| Lighter Core | Official native signing SDK and IOC execution | Not integrated |
-| Lighter Robinhood | Separate native deployment and signing domain | Live total and historical chart |
-| Entropy | Hyperliquid main and Entropy `io:*` perpetual markets | Not integrated |
+## Learn more and contribute
 
-Ticker lists come from each selected venue’s active perpetual market catalog and are searchable. Each hedge leg selects its own ticker; the application performs no cross-venue asset-equivalence validation. Entropy requires a main trading account and a registered API agent; unified/portfolio margin, subaccounts and vaults are excluded. See [exchange setup and verified scope](docs/exchanges.md).
+- [User guide](docs/guide.zh-CN.md): account setup, strategies, parameters, pausing and closing.
+- [Hedging rules](docs/hedging.md) / [Grid rules](docs/GRID.md): exact execution behavior.
+- [Exchange scope](docs/exchanges.md): account profiles, funding, fees and points limitations. Trading PnL excludes actual funding payments; missing data stays unknown. Automated tests do not certify funded acceptance across every venue.
+- [Report an issue](https://github.com/neal-zhu/perp-farming-bots/issues): describe your steps and remove sensitive information from screenshots and logs.
 
-## How bots work
+Developers and coding agents start with [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md) and the [code/test map](docs/development.md). Run `make check` and `make test` for development. [Architecture](docs/architecture.md) and [API reference](docs/api.md) cover implementation details.
 
-- **Spread hedging:** bind two different account instances and select each leg’s ticker, spread threshold and target USD amount per leg. Quantities use each market’s own price and precision; the second leg follows the first leg’s confirmed fill notional. Optional timed reopening closes the owned pair, waits a bounded random interval and checks the spread again.
-- **Grid:** bind one account, choose long/short/neutral, a fixed price range, grid count, investment margin, leverage and margin mode. The program watches prices and sends an IOC order when the next line is reached. Grid lines are conditional plans; orders are not placed on the exchange in advance.
-- **Run / Pause / Close:** Run enables or resumes the selected strategy; Pause keeps positions; Close handles only that bot's allocated inventory. A confirmed closed bot can run again.
-
-Signed orders are journaled before sending. Unknown outcomes are queried by the original order identity and are never blindly resent. Temporary reads retry; continuous failure for five minutes pauses the affected active strategy. The application adds no automatic stop-loss, compensating hedge or margin top-up outside the selected strategy's rules.
-
-Trading PnL deducts confirmed fees and excludes actual funding payments. Funding forecasts are shown separately. Missing fees, points or execution evidence stay explicitly unknown. Points displays do not certify reward eligibility. Automated tests validate protocol handling and strategy logic; funded acceptance is venue-specific and is not certified by this project.
-
-![Implemented strategy library in the web interface](docs/assets/strategies.png)
-
-## Development and agent entry point
-
-```bash
-uv sync --frozen
-make check
-make test
-```
-
-Start with [AGENTS.md](AGENTS.md), then [CONTRIBUTING.md](CONTRIBUTING.md) and the [code and test map](docs/development.md). Documentation links are checked by `make docs-check` and CI. [Architecture](docs/architecture.md) describes the actual execution and persistence boundaries; [API reference](docs/api.md) describes the local endpoints.
-
-## License and provenance
-
-Application code is Apache-2.0. Public dependency licenses, SDK pins and the attributed Hummingbot grid geometry adaptation are recorded in [UPSTREAMS.md](UPSTREAMS.md). No private trading project's implementation, credentials or runtime data are included.
+Application code is Apache-2.0. Dependency licenses and attributed public code reuse are recorded in [UPSTREAMS.md](UPSTREAMS.md).

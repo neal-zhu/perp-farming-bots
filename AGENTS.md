@@ -38,6 +38,7 @@ Do not copy, import, transplant or depend on code, tests, fixtures, configuratio
 - User trading actions are Run, Pause and Close. Pause keeps inventory; Close handles only that bot's allocation; confirmed closed bots can explicitly Run again. No separate Stop or account-wide close-all.
 - Keep one current configuration model and fail explicitly for unsupported formats. Do not silently convert disposable prerelease configurations.
 - UI/docs must stand alone for a new user. Remove conversation history, machine-specific incident narratives, speculative cards and stale implementation plans.
+- Lead public introductions with beginner points-farming workflows, not execution internals. Clearly label maintainer invitation links recorded in UPSTREAMS.md; never silently inject referral binding or invent points/airdrop returns.
 
 ## Working and verification
 

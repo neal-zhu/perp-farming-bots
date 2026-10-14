@@ -34,3 +34,13 @@ Hummingbot commit `9af100d6822da7d2d0291a906c730ef172284ee2`, original `hummingb
 ## Entropy protocol integration (2026-10-14)
 
 See [Entropy evidence](docs/research/entropy.md). The official frontend and public market API were inspected for native market identity, builder address and fee settings; no frontend implementation was copied. Orders explicitly use Entropy’s builder code with zero added builder fee. No app-owned builder, referral code, wallet transfer, agent creation or approval action is submitted. The official SDK is used as a dependency for `sign_l1_action`; its HTTP client and optional builder defaults are not used.
+
+## Published invitation links
+
+README files and the beginner guide explicitly label these optional maintainer invitation links:
+
+- [Arcus](https://app.arcus.xyz/ref/NEAL): `NEAL`.
+- [Entropy](https://entropy.io/?r=deltawillow2039): `deltawillow2039`.
+- [Lighter Robinhood](https://robinhoodchain.lighter.xyz/?referral=9264234S&source=none): `9264234S`.
+
+They are documentation entry points, not SDK defaults or automatic referral registration. The application submits no referral-binding action and makes no claim of an invitation bonus. Venue referral relationships follow the venue's rules. Keep these explicit links separate from native Entropy builder attribution.
