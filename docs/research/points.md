@@ -17,7 +17,7 @@ No documented Core account live-total endpoint was found in its [API index](http
 
 The [official Arcus application](https://app.arcus.xyz/) uses a separate points service with a Privy login identity token, rather than the trading API key. Authorization semantics were researched from public frontend assets; no implementation was copied. Trading API credentials do not establish authorization for this service. The application makes no Arcus points request, stores no browser session token and links to [Arcus Rewards](https://app.arcus.xyz/rewards).
 
-Entropy account points are not integrated. Neither native Hyperliquid turnover nor the presence of an Entropy builder code is treated as evidence of an official points balance. Both providers return explicit unsupported values.
+Entropy account points are not integrated. The [official referral program](https://docs.entropy.io/about-entropy/referrals) describes monetary fee rebates and referral rewards, not an account points metric. The current public application and documented API evidence do not establish a points endpoint or an authorization contract for one; see the dated [Entropy points investigation](entropy-points.md). This does not prove that a separate or future points program cannot exist. Neither native Hyperliquid turnover, referral cash rewards nor the presence of an Entropy builder code is treated as an official points balance. Both providers return explicit unsupported values.
 
 ## Runtime and presentation
 

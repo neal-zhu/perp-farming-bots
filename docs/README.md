@@ -23,6 +23,7 @@ User-facing onboarding is in Simplified Chinese, matching the current web interf
 - [Entropy signing, account scope and recovery](research/entropy.md)
 - [Margin units and configuration](research/margin.md)
 - [Account points and collection](research/points.md)
+- [Entropy points API investigation](research/entropy-points.md)
 - [Grid reference and adaptation](research/grid.md)
 - [SDK and UI source evaluation](research/sdk-and-ui.md)
 - [Framework comparison](research/frameworks.md)
