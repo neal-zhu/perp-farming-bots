@@ -35,6 +35,10 @@ Hummingbot commit `9af100d6822da7d2d0291a906c730ef172284ee2`, original `hummingb
 
 See [Entropy evidence](docs/research/entropy.md). The official frontend and public market API were inspected for native market identity, builder address and fee settings; no frontend implementation was copied. Orders explicitly use Entropy’s builder code with zero added builder fee. No app-owned builder, referral code, wallet transfer, agent creation or approval action is submitted. The official SDK is used as a dependency for `sign_l1_action`; its HTTP client and optional builder defaults are not used.
 
+## Ondo Perps protocol integration (2026-10-14)
+
+Ondo Perps protocol and reuse evidence is in [the Ondo research note](docs/research/ondo.md). The official HMAC documentation and LI.FI's Apache-2.0 Ondo provider at `233d9fda0e3f2c4b1a6e1ca8e1d65af813c10f31` (version 29.0.0) were reviewed as signing/recovery references. The adapter is independently written using Python's standard-library HMAC; no LI.FI or Ondo frontend code is copied, no TypeScript runtime is installed, and no SDK onboarding, key-creation, transfer or builder defaults are used.
+
 ## Published invitation links
 
 README files and the beginner guide explicitly label these optional maintainer invitation links:

@@ -1,6 +1,6 @@
 # Development and agent map
 
-Read [AGENTS.md](../AGENTS.md) first. The application currently supports two strategies and four account adapters. [Architecture](architecture.md) and [exchange scope](exchanges.md) describe the actual boundaries.
+Read [AGENTS.md](../AGENTS.md) first. The application currently supports two strategies and five account providers. [Architecture](architecture.md) and [exchange scope](exchanges.md) describe the actual boundaries.
 
 ## Commands
 
@@ -35,6 +35,7 @@ Do not use an existing data directory or account keys as test fixtures. Do not s
 | Native ticker catalogs and form selection | [markets.py](../src/perp_farming_bots/markets.py), [market_ui.py](../src/perp_farming_bots/market_ui.py) | [test_market_selection.py](../tests/test_market_selection.py), [test_entropy.py](../tests/test_entropy.py) |
 | Account form validation | [ui.py](../src/perp_farming_bots/ui.py) | [test_account_form.py](../tests/test_account_form.py) |
 | Native orders, fees and signing | [trading.py](../src/perp_farming_bots/trading.py), [entropy.py](../src/perp_farming_bots/entropy.py) | [test_trading.py](../tests/test_trading.py), [test_entropy.py](../tests/test_entropy.py) |
+| Ondo HMAC account/order reads and cross-margin settings | [ondo.py](../src/perp_farming_bots/ondo.py) | [test_ondo.py](../tests/test_ondo.py) |
 | Ownership, hedge entry/close or restart | [runtime.py](../src/perp_farming_bots/runtime.py), [store.py](../src/perp_farming_bots/store.py) | [test_runtime.py](../tests/test_runtime.py), [test_lifecycle.py](../tests/test_lifecycle.py) |
 | Timed reopening and random wait | [runtime.py](../src/perp_farming_bots/runtime.py), [store.py](../src/perp_farming_bots/store.py) | [test_reopening.py](../tests/test_reopening.py) |
 | Network reads and prolonged outages | [markets.py](../src/perp_farming_bots/markets.py), [runtime.py](../src/perp_farming_bots/runtime.py), [grid.py](../src/perp_farming_bots/grid.py) | [test_network_reads.py](../tests/test_network_reads.py), [test_read_outages.py](../tests/test_read_outages.py), [test_grid_quotes.py](../tests/test_grid_quotes.py) |

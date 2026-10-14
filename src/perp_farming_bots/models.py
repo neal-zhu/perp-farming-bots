@@ -13,6 +13,7 @@ class Provider(StrEnum):
     LIGHTER_RH = "lighter_robinhood"
     ARCUS = "arcus"
     ENTROPY = "entropy"
+    ONDO = "ondo"
     HYPERLIQUID = "hyperliquid"
     BINANCE = "binance"
 
@@ -22,10 +23,11 @@ PROVIDER_NAMES = {
     Provider.LIGHTER_RH: "Lighter Robinhood",
     Provider.ARCUS: "Arcus",
     Provider.ENTROPY: "Entropy",
+    Provider.ONDO: "Ondo Perps",
     Provider.HYPERLIQUID: "Hyperliquid",
     Provider.BINANCE: "Binance USD-M",
 }
-TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH, Provider.ENTROPY}
+TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH, Provider.ENTROPY, Provider.ONDO}
 
 
 class BotState(StrEnum):
@@ -58,6 +60,8 @@ class ConnectionCreate(StrictModel):
     address: str | None = Field(default=None, pattern=r"^0x[0-9a-fA-F]{40}$")
     api_key_index: int | None = Field(default=None, ge=0, le=254)
     api_private_key: SecretStr = Field(min_length=32, max_length=256)
+    api_key_id: SecretStr | None = Field(default=None, min_length=11, max_length=256)
+    account_id: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^\S+$")
 
     @field_validator("name")
     @classmethod
@@ -70,7 +74,18 @@ class ConnectionCreate(StrictModel):
     def valid_credentials(self) -> ConnectionCreate:
         if self.provider not in TRADING_PROVIDERS:
             raise ValueError("该交易所的账户接入尚未完成")
-        if self.provider == Provider.ENTROPY:
+        if self.provider == Provider.ONDO:
+            if self.address is not None or self.account_index is not None or self.api_key_index is not None:
+                raise ValueError("Ondo Perps 使用 API Key ID 和 Secret，不使用钱包或账户编号")
+            if self.api_key_id is None or not self.api_key_id.get_secret_value().startswith("ondoKeyId_"):
+                raise ValueError("请输入完整的 Ondo API Key ID，包含 ondoKeyId_ 前缀")
+            if not self.api_private_key.get_secret_value().startswith("ondoApiSecret_"):
+                raise ValueError("请输入完整的 Ondo API Secret，包含 ondoApiSecret_ 前缀")
+            if any(ch.isspace() for ch in self.api_key_id.get_secret_value() + self.api_private_key.get_secret_value()):
+                raise ValueError("Ondo API Key 不能包含空白字符")
+        elif self.api_key_id is not None or self.account_id is not None:
+            raise ValueError("只有 Ondo Perps 使用 API Key ID 和原生账户 ID")
+        elif self.provider == Provider.ENTROPY:
             if self.address is None or self.account_index is not None or self.api_key_index is not None:
                 raise ValueError("Entropy 使用交易账户地址和 API 代理密钥，不使用账户或 key 编号")
             try:
@@ -306,12 +321,37 @@ class MarketSpec(StrictModel):
     provider: Provider
     symbol: str
     native_symbol: str
-    market_id: int
+    market_id: int | str
     quantity_step: Decimal = Field(gt=0)
     price_tick: Decimal = Field(gt=0)
-    min_quantity: Decimal = Field(ge=0)
-    min_notional: Decimal = Field(ge=0)
+    min_quantity: Decimal | None = Field(ge=0)
+    min_notional: Decimal | None = Field(ge=0)
+    max_leverage: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
     tick_tiers: list[dict[str, str]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def native_id_type(self) -> MarketSpec:
+        if self.provider == Provider.ONDO:
+            if not isinstance(self.market_id, str) or self.market_id != self.native_symbol:
+                raise ValueError("Ondo 原生市场 ID 必须是完整合约名称")
+        elif type(self.market_id) is not int:
+            raise ValueError("该交易所的原生市场 ID 必须是整数")
+        return self
+
+    def minimums_known(self) -> bool:
+        return self.min_quantity is not None and self.min_notional is not None
+
+    def size_lower_bound(self, price: Decimal) -> Decimal:
+        """Lower bound from published constraints; unknown floors remain None."""
+        limits = [self.quantity_step]
+        if self.min_quantity is not None:
+            limits.append(self.min_quantity)
+        if self.min_notional is not None:
+            limits.append(self.min_notional / price)
+        return max(limits)
+
+    def meets_known_limits(self, quantity: Decimal, price: Decimal) -> bool:
+        return quantity > 0 and quantity >= self.size_lower_bound(price)
 
 
 class Preview(StrictModel):

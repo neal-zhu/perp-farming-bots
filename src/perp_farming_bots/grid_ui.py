@@ -17,6 +17,7 @@ from .models import (
     BotUpdate,
     GridMarginCapital,
     GridParameters,
+    Provider,
 )
 from .runtime import Runtime, bounded_price
 from .store import Store
@@ -217,6 +218,18 @@ def grid_dialog(
         native_info = ui.label("正在读取交易所杠杆上限与当前设置…").classes("text-xs text-slate-500")
         native_description: str | None = None
 
+        def select_margin_modes():
+            is_ondo = store.connection(account.value).provider == Provider.ONDO
+            margin_mode.set_options(
+                {"cross": "全仓 · 共享账户资金"} if is_ondo
+                else {"isolated": "逐仓 · 该币种独立保证金", "cross": "全仓 · 共享账户资金"}
+            )
+            if is_ondo and margin_mode.value != "cross":
+                margin_mode.set_value("cross")
+
+        select_margin_modes()
+        account.on_value_change(select_margin_modes)
+
         def explain_capital():
             amount = Decimal(str(budget.value)) if budget.value is not None else None
             multiple = Decimal(str(leverage.value)) if leverage.value is not None else None
@@ -272,6 +285,9 @@ def grid_dialog(
         ui.label("保存时自动检查账户余额和每格最低金额；不符合要求会在这里提示，运行时再次核对。").classes(
             "text-xs text-slate-500"
         )
+        minimums_help = ui.label("Ondo 未公布最低下单金额；按数量精度检查，订单仍需交易所确认。").classes("text-xs text-slate-500")
+        minimums_help.set_visibility(store.connection(account.value).provider == Provider.ONDO)
+        account.on_value_change(lambda: minimums_help.set_visibility(store.connection(account.value).provider == Provider.ONDO))
         slippage = (
             ui.number(
                 "最大滑点 %",

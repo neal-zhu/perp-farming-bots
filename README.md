@@ -25,7 +25,7 @@ Points allocation and eligibility follow each venue's program rules. The tool do
 
 ## Supported platforms and invitation links
 
-Trading integrations are available for Arcus, Lighter Core, Lighter Robinhood and Entropy. These optional invitation links are provided by the project maintainer; any referral relationship follows the platform's rules.
+Trading integrations are available for Arcus, Lighter Core, Lighter Robinhood, Entropy and Ondo Perps. These optional invitation links are provided by the project maintainer; any referral relationship follows the platform's rules.
 
 | Platform | Invitation link | Code |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Trading integrations are available for Arcus, Lighter Core, Lighter Robinhood an
 
 The application does not automatically register users, bind referral codes or create wallet approvals.
 
-**Automatic points collection currently covers Lighter Robinhood only.** Arcus, Core and Entropy points queries are not integrated. Trading support and points-query support are described separately in [exchange scope](docs/exchanges.md).
+**Automatic points collection currently covers Lighter Robinhood only.** Arcus, Core, Entropy and Ondo Perps points queries are not integrated. Trading support and points-query support are described separately in [exchange scope](docs/exchanges.md).
 
 ## Your first bot
 

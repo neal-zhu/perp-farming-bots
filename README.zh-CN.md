@@ -25,7 +25,7 @@ Perp Farming Bots 是一个免费开源的交易工具。你在中文页面里�
 
 ## 从哪里开始
 
-目前支持 Arcus、Lighter Core、Lighter Robinhood 和 Entropy 的交易接入。首次使用可以先选一个已有账户的平台。
+目前支持 Arcus、Lighter Core、Lighter Robinhood、Entropy 和 Ondo Perps 的交易接入。首次使用可以先选一个已有账户的平台。
 
 下面是维护者提供的邀请链接；使用这些链接会涉及平台的推荐关系，具体按平台邀请规则执行。
 
@@ -45,7 +45,7 @@ Perp Farming Bots 是一个免费开源的交易工具。你在中文页面里�
 4. **点击运行。** 保存只是记住参数，点击“运行”后才开始执行策略。
 5. **查看结果。** 在 Bot 页面看成交和盈亏，在积分页面看已接入的账户积分。可以暂停策略或关闭该 Bot 的仓位。
 
-**目前自动采集的是 Lighter Robinhood 账户积分。** Arcus、Lighter Core 和 Entropy 的积分查询尚未接入，可以到各平台官网查看。交易支持范围与积分查询支持范围分别见 [平台接入说明](docs/exchanges.md)。
+**目前自动采集的是 Lighter Robinhood 账户积分。** Arcus、Lighter Core、Entropy 和 Ondo Perps 的积分查询尚未接入，可以到各平台官网查看。交易支持范围与积分查询支持范围分别见 [平台接入说明](docs/exchanges.md)。
 
 ![中文策略页面](docs/assets/strategies.png)
 

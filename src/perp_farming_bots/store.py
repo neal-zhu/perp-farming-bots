@@ -238,12 +238,14 @@ class Store:
             if value.provider.value == "arcus"
             else value.address
             if value.provider.value == "entropy"
+            else value.account_id
+            if value.provider.value == "ondo"
             else str(value.account_index)
         )
         if account_ref is None:
             raise ValueError("缺少原生账户身份")
         item = Connection(
-            **value.model_dump(exclude={"api_private_key"}),
+            **value.model_dump(exclude={"api_private_key", "api_key_id", "account_id"}),
             account_ref=account_ref,
             id=uuid.uuid4().hex,
             created_at=time.time(),

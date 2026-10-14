@@ -75,6 +75,8 @@ def number(value: Any) -> Decimal:
 
 
 async def market_rules(markets: Markets, spec: MarketSpec) -> dict[str, Any]:
+    if type(spec.market_id) is not int:
+        raise ValueError("Entropy 原生市场编号无效")
     dex = market_dex(spec.native_symbol)
     meta = await markets.entropy_info("meta", dex=dex)
     index = spec.market_id % 10000 if dex else spec.market_id
@@ -127,6 +129,8 @@ async def entropy_catalog(markets: Markets) -> dict[str, MarketSpec]:
 
 
 async def entropy_funding(markets: Markets, spec: MarketSpec) -> dict[str, Any]:
+    if type(spec.market_id) is not int:
+        raise ValueError("Entropy 原生市场编号无效")
     dex = market_dex(spec.native_symbol)
     index = spec.market_id % 10000 if dex else spec.market_id
     meta, contexts = await markets.entropy_info("metaAndAssetCtxs", dex=dex)

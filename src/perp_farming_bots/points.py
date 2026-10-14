@@ -56,6 +56,8 @@ def scope_id(connection: Connection) -> str:
         if connection.provider == Provider.ARCUS
         else f"entropy:{connection.address}"
         if connection.provider == Provider.ENTROPY
+        else f"ondo:{connection.account_ref}"
+        if connection.provider == Provider.ONDO
         else f"{connection.provider}:{connection.account_index}"
     )
 

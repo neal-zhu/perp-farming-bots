@@ -31,6 +31,7 @@ The graph describes the ordering constraint, not separate services. A signed req
 | [markets.py](../src/perp_farming_bots/markets.py) | Public catalogs/books/funding, precision, freshness and read-only transport retries |
 | [trading.py](../src/perp_farming_bots/trading.py) | Accounts facade, Arcus and Lighter adapter contract, signing and lookup |
 | [entropy.py](../src/perp_farming_bots/entropy.py) | Entropy's scoped Hyperliquid main-account and native execution adapter |
+| [ondo.py](../src/perp_farming_bots/ondo.py) | Ondo HMAC account binding, native ticker rules, IOC evidence and cross-margin settings |
 | [margin.py](../src/perp_farming_bots/margin.py), [native_margin.py](../src/perp_farming_bots/native_margin.py) | Native margin units and journaled setting/read-back workflow |
 | [points.py](../src/perp_farming_bots/points.py), [notifications.py](../src/perp_farming_bots/notifications.py) | Independent account sampling and alert delivery |
 | [ui.py](../src/perp_farming_bots/ui.py), [grid_ui.py](../src/perp_farming_bots/grid_ui.py) | Persistent pages, inline forms and user commands |

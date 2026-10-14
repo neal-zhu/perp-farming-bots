@@ -36,6 +36,8 @@ class Margin:
         if capital.leverage > snapshot.max_leverage:
             raise ValueError(f"该市场最高可设置 {snapshot.max_leverage.normalize():f} 倍杠杆")
         provider = self.runtime.store.connection(p.connection_id).provider
+        if provider == Provider.ONDO and capital.margin_mode != "cross":
+            raise ValueError("Ondo Perps 仅支持全仓保证金，请选择全仓")
         if provider in {Provider.LIGHTER, Provider.LIGHTER_RH} and 10000 % capital.leverage:
             raise ValueError("此杠杆无法按交易所精度精确表示，请选择 1、2、4、5、8、10、20、25 等倍数")
 

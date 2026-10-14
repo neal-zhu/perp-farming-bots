@@ -21,6 +21,7 @@ User-facing onboarding is in Simplified Chinese, matching the current web interf
 
 - [Arcus/Lighter execution and funding](research/native-execution.md)
 - [Entropy signing, account scope and recovery](research/entropy.md)
+- [Ondo Perps authentication, native orders and limits](research/ondo.md)
 - [Margin units and configuration](research/margin.md)
 - [Account points and collection](research/points.md)
 - [Entropy points API investigation](research/entropy-points.md)

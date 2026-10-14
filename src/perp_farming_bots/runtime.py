@@ -30,7 +30,7 @@ from .models import (
 )
 from .points import Points
 from .store import Store, fills, operations, orders
-from .trading import Accounts
+from .trading import Accounts, OrderRejected
 
 logger = logging.getLogger(__name__)
 READ_OUTAGE_PAUSE_SECONDS = 300
@@ -254,7 +254,7 @@ class Runtime:
         for spec, price, quantity in [
             (long_spec, long_price, long_quantity), (short_spec, short_price, short_quantity)
         ]:
-            if quantity < spec.min_quantity or quantity * price < spec.min_notional:
+            if not spec.meets_known_limits(quantity, price):
                 raise ValueError(f"{spec.symbol} 金额低于交易所最小下单限制")
         return Preview(
             long_quantity=long_quantity,
@@ -441,11 +441,11 @@ class Runtime:
             price = min(price, grid_bounds[1]) if side == "buy" else max(price, grid_bounds[0])
         if trigger_price is not None:
             price = min(price, trigger_price) if side == "buy" else max(price, trigger_price)
-        if not reduce_only and (quantity < spec.min_quantity or quantity * price < spec.min_notional):
+        if not reduce_only and not spec.meets_known_limits(quantity, price):
             raise ValueError("实际成交数量低于下一腿最小下单限制，保留持仓并告警")
         client_id = (
             uuid.uuid4().hex
-            if account.provider in {Provider.ARCUS, Provider.ENTROPY}
+            if account.provider in {Provider.ARCUS, Provider.ENTROPY, Provider.ONDO}
             else str(secrets.randbits(47))
         )
         intent = OrderIntent(
@@ -467,6 +467,10 @@ class Runtime:
         try:
             native_id = await adapter.send(prepared)
             self.store.update_order(order_id, "submitted", native_id)
+        except OrderRejected:
+            result = OrderResult(status="rejected", quantity=Decimal(0), average_price=None, fee=Decimal(0), native_id=None)
+            self.store.apply_order_result(order_id, result)
+            return result
         except Exception:
             # A send error does not establish rejection. Query the original client identity.
             self.store.update_order(order_id, "unknown")

@@ -19,6 +19,7 @@ from .models import PROVIDER_NAMES, Book, FundingSnapshot, Level, MarketSpec, Pr
 HOSTS = {
     Provider.ARCUS: "https://api.arcus.xyz",
     Provider.ENTROPY: "https://api.hyperliquid.xyz",
+    Provider.ONDO: "https://api.ondoperps.xyz",
     Provider.LIGHTER: "https://mainnet.zklighter.elliot.ai",
     Provider.LIGHTER_RH: "https://api.rh.lighter.xyz",
 }
@@ -105,7 +106,9 @@ class Markets:
             "/".join(causes),
         )
 
-    async def request_response(self, provider: Provider, method: str, path: str, **kwargs) -> httpx.Response:
+    async def request_response(
+        self, provider: Provider, method: str, path: str, *, raise_status: bool = True, **kwargs
+    ) -> httpx.Response:
         if provider not in HOSTS:
             raise ValueError("该交易所接入尚未完成")
         method = method.upper()
@@ -133,10 +136,11 @@ class Markets:
                             await response.aclose()
                             await asyncio.sleep(READ_RETRY_DELAY_SECONDS)
                             continue
-                        raise VenueRequestError(
-                            f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）",
-                            response.status_code,
-                        )
+                        if raise_status:
+                            raise VenueRequestError(
+                                f"{PROVIDER_NAMES[provider]} 请求失败（HTTP {response.status_code}）",
+                                response.status_code,
+                            )
                     if attempts > 1:
                         endpoint = "/".join(
                             path.split("?", 1)[0].split("/")[: 3 if provider == Provider.ARCUS else 4]
@@ -183,7 +187,11 @@ class Markets:
 
     async def _load_catalog(self, provider: Provider) -> dict[str, MarketSpec]:
         catalog: dict[str, MarketSpec] = {}
-        if provider == Provider.ENTROPY:
+        if provider == Provider.ONDO:
+            from .ondo import ondo_catalog
+
+            catalog = await ondo_catalog(self)
+        elif provider == Provider.ENTROPY:
             from .entropy import entropy_catalog
 
             catalog = await entropy_catalog(self)
@@ -240,7 +248,16 @@ class Markets:
         try:
             async with self.locks.setdefault(key, asyncio.Lock()):
                 spec = await self.spec(provider, symbol)
-                if provider == Provider.ENTROPY:
+                if provider == Provider.ONDO:
+                    from .ondo import ondo_request, timestamp
+
+                    response = await ondo_request(self, "GET", "/v1/perps/depth", params={"market": symbol, "depth": 20})
+                    r = response["result"]
+                    if r["market"] != spec.native_symbol:
+                        raise ValueError("Ondo 盘口市场身份不匹配")
+                    bids, asks = r["bids"], r["asks"]
+                    received_at = timestamp(r["time"])
+                elif provider == Provider.ENTROPY:
                     r = await self.entropy_info("l2Book", coin=spec.native_symbol)
                     if r["coin"] != spec.native_symbol:
                         raise ValueError("Entropy 盘口市场身份不匹配")
@@ -286,6 +303,10 @@ class Markets:
             raise
 
     async def _funding_data(self, provider: Provider, spec: MarketSpec) -> dict[str, Any]:
+        if provider == Provider.ONDO:
+            from .ondo import ondo_funding
+
+            return await ondo_funding(self, spec)
         if provider == Provider.ENTROPY:
             from .entropy import entropy_funding
 

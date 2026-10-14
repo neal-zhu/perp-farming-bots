@@ -36,10 +36,13 @@
 | Lighter Core | Account Index、API key 编号、API 私钥 | [Core API Keys](https://app.lighter.xyz/apikeys) |
 | Lighter Robinhood | 该部署的 Account Index、API key 编号、API 私钥 | [Robinhood API Keys](https://robinhoodchain.lighter.xyz/apikeys) |
 | Entropy | 主交易账户地址、已授权的 API 代理私钥 | 先在 [Entropy](https://entropy.io) 完成交易授权，再在 [Hyperliquid API](https://app.hyperliquid.xyz/API) 创建有名称的代理 |
+| Ondo Perps | API Key ID、API Secret（保留原始前缀） | 在 [Ondo API Keys](https://app.ondoperps.xyz/account/api-keys) 创建 **View & Trade** 密钥；验证时自动识别账户 |
 
 点击“验证并连接账户”后，程序先读取原生账户并检查授权，通过后才保存。这里使用交易 API 密钥，不填写钱包助记词或主钱包私钥。Lighter 的 Core 与 Robinhood 凭据不能互换。Entropy 支持主市场和 `io:*` 合约，暂不支持统一/组合保证金、子账户和 Vault。
 
 账户实例代表真实账户身份。给同一原生账户换 API key 不会形成第二个独立账户。完整的身份定义和能力范围见 [交易所接入](exchanges.md)。
+
+Ondo 不需要填写钱包地址或账户编号，也不需要转账权限。若密钥设置了 IP 白名单，请允许运行工具的服务器 IP。它的合约保留完整名称，例如 `BTC-USD.P`、`AAPL-USD.P`；网格仅支持全仓，投入额度不会隔离成一笔独立保证金。平台未公布最低下单金额，保存时按已公布的数量精度检查，实际订单仍由交易所校验。
 
 ## 创建对冲 Bot
 

@@ -25,10 +25,10 @@ class GridPreview(StrictModel):
     can_initialize: bool
     current_price: Decimal
     inside_range: bool
-    minimum_collateral: Decimal
+    minimum_collateral: Decimal | None
     notional_limit: Decimal
     collateral_budget: Decimal
-    minimum_quantity_per_grid: Decimal
+    minimum_quantity_per_grid: Decimal | None
     account_available: Decimal
     account_checked_at: float
     execution: str = "price_triggered_ioc"
@@ -88,13 +88,13 @@ class Grid:
         if p.direction == "neutral":
             available_units = max_units
         minimum_quantity = (
-            max(spec.quantity_step, spec.min_quantity, spec.min_notional / levels[0]) / spec.quantity_step
+            spec.size_lower_bound(levels[0]) / spec.quantity_step
         ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
         leverage = p.capital.leverage
         minimum_budget = minimum_quantity * levels[-1] * max_units / leverage
         minimum_budget_cents = minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
         quantity = quantity_floor(p.notional_limit / levels[-1] / max_units, spec.quantity_step)
-        if quantity <= 0 or quantity < spec.min_quantity or quantity * levels[0] < spec.min_notional:
+        if not spec.meets_known_limits(quantity, levels[0]):
             raise ValueError(
                 f"每格数量 {quantity} {p.symbol} 低于最小订单要求。"
                 f"按此区间和 {p.grid_count} 格，保证金额度至少 ${minimum_budget_cents:,.2f}，"
@@ -116,10 +116,10 @@ class Grid:
             can_initialize=available_units > 0,
             current_price=midpoint,
             inside_range=levels[0] <= midpoint <= levels[-1],
-            minimum_collateral=minimum_budget,
+            minimum_collateral=minimum_budget if spec.minimums_known() else None,
             notional_limit=p.notional_limit,
             collateral_budget=p.collateral_budget,
-            minimum_quantity_per_grid=minimum_quantity,
+            minimum_quantity_per_grid=minimum_quantity if spec.minimums_known() else None,
             account_available=available,
             account_checked_at=account.received_at,
         )

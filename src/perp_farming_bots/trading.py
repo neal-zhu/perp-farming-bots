@@ -37,6 +37,10 @@ def exact_units(value: Decimal, step: Decimal) -> int:
     return int(units)
 
 
+class OrderRejected(ValueError):
+    """An explicit native rejection of this exact submitted request."""
+
+
 class Adapter:
     def __init__(self, value: ConnectionCreate, markets: Markets):
         self.value, self.markets = value, markets
@@ -333,6 +337,8 @@ class Lighter(Adapter):
 
     async def prepare(self, intent: OrderIntent) -> dict[str, Any]:
         spec = await self.markets.spec(self.value.provider, intent.symbol)
+        if type(spec.market_id) is not int:
+            raise ValueError("Lighter 原生市场编号必须是整数")
         nonce = await self.markets.request(
             self.value.provider,
             "GET",
@@ -372,6 +378,8 @@ class Lighter(Adapter):
                 "此杠杆无法按 Lighter 原生保证金精度精确表示，请选择 1、2、4、5、8、10、20、25 等倍数"
             )
         spec = await self.markets.spec(self.value.provider, symbol)
+        if type(spec.market_id) is not int:
+            raise ValueError("Lighter 原生市场编号必须是整数")
         nonce = await self.markets.request(
             self.value.provider,
             "GET",
@@ -532,6 +540,10 @@ class Accounts:
         self.errors: dict[str, str] = {}
 
     def adapter_for(self, value: ConnectionCreate) -> Adapter:
+        if value.provider == Provider.ONDO:
+            from .ondo import Ondo
+
+            return Ondo(value, self.markets)
         if value.provider == Provider.ENTROPY:
             from .entropy import Entropy
 
@@ -544,11 +556,10 @@ class Accounts:
 
     def adapter(self, connection_id: str) -> Adapter:
         if connection_id not in self.adapters:
-            self.adapters[connection_id] = self.adapter_for(
-                ConnectionCreate.model_validate_json(
-                    self.secrets.decrypt(self.store.credentials(connection_id))
-                )
-            )
+            value = ConnectionCreate.model_validate_json(self.secrets.decrypt(self.store.credentials(connection_id)))
+            if value.provider == Provider.ONDO and value.account_id != self.store.connection(connection_id).account_ref:
+                raise ValueError("Ondo 加密凭据与原生账户身份不匹配")
+            self.adapters[connection_id] = self.adapter_for(value)
         return self.adapters[connection_id]
 
     async def add(self, value: ConnectionCreate):
@@ -557,6 +568,8 @@ class Accounts:
         # SecretStr is intentionally serialized only here, for encrypted local storage.
         record = value.model_dump(mode="json")
         record["api_private_key"] = value.api_private_key.get_secret_value()
+        if value.api_key_id is not None:
+            record["api_key_id"] = value.api_key_id.get_secret_value()
         connection = self.store.add_connection(value, snapshot, self.secrets.encrypt(json.dumps(record)))
         self.adapters[connection.id] = adapter
         self.snapshots[connection.id] = snapshot
