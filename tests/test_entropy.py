@@ -51,12 +51,21 @@ async def entropy():
         "builderFee": "0",
     }
     data = {
+        "perpDexs": [None, {"name": "xyz"}, {"name": "io"}],
         "meta": {
+            "collateralToken": 0,
             "universe": [
                 {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
                 {"name": "ETH", "szDecimals": 4, "maxLeverage": 25},
-                {"name": "io:BTC", "szDecimals": 5, "maxLeverage": 3},
+                {"name": "HYPE", "szDecimals": 2, "maxLeverage": 3},
             ]
+        },
+        "meta_io": {
+            "collateralToken": 0,
+            "universe": [
+                {"name": "io:BTC", "szDecimals": 5, "maxLeverage": 3},
+                {"name": "io:OAI", "szDecimals": 3, "maxLeverage": 6, "onlyIsolated": True},
+            ],
         },
         "userAbstraction": "dexAbstraction",
         "clearinghouseState": {
@@ -64,6 +73,10 @@ async def entropy():
             "assetPositions": [],
             "marginSummary": {"accountValue": "1000.50"},
             "withdrawable": "950.40",
+        },
+        "clearinghouseState_io": {
+            "time": int(time.time() * 1000), "assetPositions": [],
+            "marginSummary": {"accountValue": "0"}, "withdrawable": "0",
         },
         "extraAgents": [{"address": adapter.key.address, "validUntil": int((time.time() + 86400) * 1000)}],
         "approvedBuilders": [ENTROPY_BUILDER],
@@ -96,7 +109,10 @@ async def entropy():
                 else {"role": "agent", "data": {"user": value.address}}
             )
             return httpx.Response(200, json=role)
-        return httpx.Response(200, json=data[payload["type"]])
+        key = payload["type"] + ("_io" if payload.get("dex") == "io" and payload["type"] in {
+            "meta", "clearinghouseState", "openOrders", "metaAndAssetCtxs"
+        } else "")
+        return httpx.Response(200, json=data[key])
 
     markets.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     yield markets, adapter, data, calls
@@ -155,7 +171,7 @@ async def test_foreign_agent_main_wallet_and_unverified_account_modes_are_reject
 
 async def test_entropy_native_precision_and_qualified_markets_are_not_aliased(entropy):
     markets, _, _, _ = entropy
-    assert set(await markets.catalog(Provider.ENTROPY)) == {"BTC", "ETH"}
+    assert set(await markets.catalog(Provider.ENTROPY)) == {"BTC", "ETH", "HYPE", "io:BTC", "io:OAI"}
     btc = await markets.spec(Provider.ENTROPY, "BTC")
     eth = await markets.spec(Provider.ENTROPY, "ETH")
     assert btc.market_id == 0 and btc.quantity_step == Decimal("0.00001")
@@ -165,6 +181,45 @@ async def test_entropy_native_precision_and_qualified_markets_are_not_aliased(en
     assert bounded_price(Decimal("1234567.1"), btc, "sell") == Decimal("1234567")
     book = await markets.book(Provider.ENTROPY, "BTC")
     assert book.bids[0].price == Decimal("59999") and book.source.startswith("Entropy")
+
+
+async def test_entropy_hip3_keeps_native_id_ticker_and_margin_domain(entropy):
+    markets, adapter, data, calls = entropy
+    spec = await markets.spec(Provider.ENTROPY, "io:OAI")
+    assert spec.market_id == 120001 and spec.quantity_step == Decimal("0.001")
+    value = intent().model_copy(update={"symbol": "io:OAI", "quantity": Decimal("0.1"), "limit_price": Decimal("1500")})
+    prepared = await adapter.prepare(value)
+    assert prepared["action"]["orders"][0]["a"] == 120001
+    isolated = GridMarginCapital(investment_usd=100, leverage=3, margin_mode="isolated")
+    assert (await adapter.prepare_margin("io:OAI", isolated))["action"]["asset"] == 120001
+    with pytest.raises(ValueError, match="模式"):
+        await adapter.prepare_margin("io:OAI", isolated.model_copy(update={"margin_mode": "cross"}))
+    data["openOrders_io"] = [{"coin": "io:OAI", "oid": 99}]
+    assert await adapter.open_orders("io:OAI") == data["openOrders_io"]
+    assert calls[-1][1]["dex"] == "io"
+    data["clearinghouseState_io"]["withdrawable"] = "20"
+    data["clearinghouseState_io"]["marginSummary"]["accountValue"] = "50"
+    data["clearinghouseState_io"]["assetPositions"] = [{"position": {
+        "coin": "io:OAI", "szi": "0.1", "entryPx": "1500", "unrealizedPnl": "1"
+    }}]
+    data["userAbstraction"] = "default"
+    snapshot = await adapter.snapshot()
+    assert snapshot.positions[0].symbol == "io:OAI" and snapshot.equity == Decimal("1050.50")
+    assert await adapter.available("io:OAI") == 20  # Native domain, not aggregate balance.
+    data["userAbstraction"] = "dexAbstraction"
+    assert await adapter.available("io:OAI") == Decimal("950.40")
+    assert all(path == "/info" for path, _ in calls)
+
+
+async def test_hip3_original_order_recovery_uses_qualified_coin(entropy):
+    _, adapter, data, _ = entropy
+    value = intent().model_copy(update={"symbol": "io:OAI"})
+    data["orderStatus"]["order"]["order"]["coin"] = "io:OAI"
+    data["userFillsByTime"][0]["coin"] = "io:OAI"
+    assert (await adapter.lookup(value, "42")).quantity == value.quantity
+    data["userFillsByTime"][0]["coin"] = "OAI"
+    with pytest.raises(ValueError, match="身份"):
+        await adapter.lookup(value, "42")
 
 
 async def test_signed_ioc_uses_entropy_builder_without_added_fee_and_recovers_by_cloid(entropy):

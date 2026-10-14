@@ -13,6 +13,7 @@ from .bot_styles import BOT_STYLES
 from .bot_widgets import AlertFeed, BotCard, GridBotCard
 from .formatting import money, stamp
 from .grid_ui import grid_dialog
+from .market_ui import MarketSelector
 from .models import (
     PROVIDER_NAMES,
     STRATEGIES,
@@ -272,13 +273,13 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                 with ui.context.client.layout:
                     dialog = ui.dialog()
                 bot_forms[form_key] = dialog
-                with dialog, ui.card().classes("w-full max-w-xl p-6 gap-4"):
+                with dialog, ui.card().classes("w-full max-w-xl p-6 gap-4").style("max-height: 90vh; overflow-y: auto"):
                     ui.label("修改 Bot" if bot else "创建 Bot").classes("text-2xl font-bold")
                     ui.label("跨账户价差对冲").classes("text-emerald-700")
                     name = (
                         ui.input(
                             "Bot 名称 *",
-                            value=bot.name if bot else "BTC 对冲",
+                            value=bot.name if bot else "价差对冲",
                             validation={"请输入 Bot 名称": lambda v: isinstance(v, str) and bool(v.strip())},
                         )
                         .without_auto_validation()
@@ -295,6 +296,11 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         .classes("w-full")
                         .props("outlined")
                     )
+                    long_ticker = MarketSelector(
+                        store, runtime.markets, long, label="做多 ticker",
+                        value=parameters.long_symbol if parameters else None,
+                        enabled=editable["entry_parameters"],
+                    )
                     short = (
                         ui.select(
                             choices,
@@ -304,26 +310,24 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         .classes("w-full")
                         .props("outlined")
                     )
-                    symbol = (
-                        ui.select(
-                            ["BTC", "ETH", "SOL"],
-                            label="币种",
-                            value=parameters.symbol if parameters else "BTC",
-                        )
-                        .classes("w-full")
-                        .props("outlined")
+                    short_ticker = MarketSelector(
+                        store, runtime.markets, short, label="做空 ticker",
+                        value=parameters.short_symbol if parameters else None,
+                        enabled=editable["entry_parameters"],
+                    )
+                    ui.label("价差 =（做空报价 ÷ 做多报价 − 1）× 100%；两腿 ticker 分别选择。").classes(
+                        "text-xs text-slate-500"
                     )
                     with ui.row().classes("w-full"):
                         threshold = (
                             ui.number(
                                 "价差条件 %",
                                 value=float(parameters.threshold_pct) if parameters else 0.1,
-                                min=-10,
-                                max=100,
+                                min=-100,
                                 step=0.01,
                                 validation={
-                                    "请输入 -10 到 100 的价差条件": lambda v: (
-                                        v is not None and -10 <= v <= 100
+                                    "价差条件须大于 -100%": lambda v: (
+                                        v is not None and v > -100
                                     )
                                 },
                             )
@@ -351,7 +355,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         ui.label("建仓参数已锁定。可修改名称、允许的滑点和定期重开设置。").classes(
                             "text-amber-800 text-sm"
                         )
-                        entry_controls: list[DisableableElement] = [long, short, symbol, threshold, amount]
+                        entry_controls: list[DisableableElement] = [
+                            long, short, long_ticker.select, short_ticker.select, threshold, amount
+                        ]
                         for entry_control in entry_controls:
                             entry_control.disable()
                     else:
@@ -443,7 +449,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             parameters=HedgeParameters(
                                 long_connection_id=long.value,
                                 short_connection_id=short.value,
-                                symbol=symbol.value,
+                                long_symbol=long_ticker.select.value,
+                                short_symbol=short_ticker.select.value,
                                 threshold_pct=Decimal(str(threshold.value)),
                                 target_usd=Decimal(str(amount.value)),
                                 slippage_bps=Decimal(str(slippage.value)) * 100,
@@ -464,10 +471,14 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         if long.value == short.value:
                             form_error.set_text("做多和做空必须选择不同账户实例。")
                             return False
+                        if not long_ticker.valid() or not short_ticker.valid():
+                            form_error.set_text("请分别选择两腿的可用合约；列表读取失败时点击刷新重试。")
+                            return False
                         form_error.set_text("" if valid else "请先修正标红的字段。")
                         return valid
 
                     async def preview():
+                        await asyncio.gather(long_ticker.ensure_loaded(), short_ticker.ensure_loaded())
                         if not validate():
                             return
                         try:
@@ -475,7 +486,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             assert isinstance(result, Preview)
                             preview_label.set_text(
                                 f"{result.source} · 当前价差 {result.spread_pct:.4f}% · "
-                                f"数量 {result.quantity} · 预计费用 {money(result.estimated_fees)}"
+                                f"做多 {result.long_quantity} {long_ticker.select.value} / "
+                                f"做空 {result.short_quantity} {short_ticker.select.value}"
                             )
                         except Exception as exc:
                             preview_label.set_text(
@@ -484,6 +496,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
 
                     async def save():
                         nonlocal busy
+                        if busy:
+                            return
+                        await asyncio.gather(long_ticker.ensure_loaded(), short_ticker.ensure_loaded())
                         if busy or not validate():
                             return
                         busy = True
@@ -491,6 +506,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         try:
                             async with runtime.guard:
                                 result = value()
+                                await runtime.validate_configuration(result, bot_id=bot_id)
                                 if bot_id:
                                     store.update_bot(bot_id, result)
                                 else:
@@ -639,7 +655,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         help_label.set_text(
                             "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
                             if is_arcus
-                            else "Entropy：使用交易账户地址与 Hyperliquid API 代理私钥。先在 Entropy 官网连接钱包完成交易授权。支持 BTC、ETH、SOL；请勿填写主钱包私钥。"
+                            else "Entropy：使用交易账户地址与 Hyperliquid API 代理私钥。先在 Entropy 官网完成交易授权；支持主市场和 io 合约。请勿填写主钱包私钥。"
                             if is_entropy
                             else "Lighter：填写该部署的 Account Index、API key 编号和 API 私钥。"
                         )

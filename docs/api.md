@@ -71,7 +71,9 @@ A grid creation shape, with an existing connection ID substituted by the caller:
 
 This illustrates structure, not suitable trading parameters for an account. Native precision, minimum orders, balance and reservations are validated against the selected account. `grid_count` and leverage require integers; neutral grids require an even count and `open_position_on_start=false`.
 
-For `spread_hedging`, parameters are `long_connection_id`, `short_connection_id`, `symbol`, `threshold_pct`, `target_usd`, optional `slippage_bps`, optional `reopen_interval_seconds`, and `reopen_random_wait_seconds`. The two account IDs must differ. Intervals are 60–2,592,000 seconds and the random upper bound is 0–300 seconds.
+For `spread_hedging`, parameters are `long_connection_id`, `long_symbol`, `short_connection_id`, `short_symbol`, `threshold_pct`, `target_usd`, optional `slippage_bps`, optional `reopen_interval_seconds`, and `reopen_random_wait_seconds`. The two account IDs must differ. Tickers are independent, retain their native case/prefix and must exist in their selected venue’s active perpetual catalog. No asset-equivalence check is performed. Hedge previews return `long_quantity` and `short_quantity` separately. Intervals are 60–2,592,000 seconds and the random upper bound is 0–300 seconds.
+
+`GET /api/connections/{id}/markets` returns the selected venue's active ticker list. Add `?refresh=true` to fetch it again rather than use the five-minute cache.
 
 `ConnectionCreate` requires a name, provider and secret `api_private_key`. Arcus additionally requires address and account_index; Lighter requires account_index and api_key_index, with optional address; Entropy requires address and omits both numeric indices. Credentials are validated through native reads before storage. Do not put secret example values in documentation, test captures or issue reports.
 

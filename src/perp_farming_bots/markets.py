@@ -73,6 +73,8 @@ class Markets:
         self.http = httpx.AsyncClient(verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), timeout=15)
         self.cache: dict[tuple[Provider, str], Book] = {}
         self.catalogs: dict[Provider, dict[str, MarketSpec]] = {}
+        self.catalog_checked: dict[Provider, float] = {}
+        self.catalog_locks: dict[Provider, asyncio.Lock] = {}
         self.locks: dict[tuple[Provider, str], asyncio.Lock] = {}
         self.funding_cache: dict[tuple[Provider, str], FundingSnapshot] = {}
         self.funding_locks: dict[tuple[Provider, str], asyncio.Lock] = {}
@@ -172,54 +174,57 @@ class Markets:
     async def entropy_info(self, kind: str, **payload) -> Any:
         return await self.request(Provider.ENTROPY, "POST", "/info", json={"type": kind, **payload})
 
-    async def catalog(self, provider: Provider) -> list[str]:
-        if provider not in self.catalogs:
-            catalog: dict[str, MarketSpec] = {}
-            if provider == Provider.ENTROPY:
-                from .entropy import entropy_catalog
-
-                catalog = await entropy_catalog(self)
-            elif provider == Provider.ARCUS:
-                response = await self.request(provider, "GET", "/v1/markets")
-                for m in response["markets"]:
-                    if m["type"] != "PERPETUAL" or m["status"] != "ONLINE" or m["category"] != "CRYPTO":
-                        continue
-                    symbol = m["baseAsset"]
-                    if symbol in catalog:
-                        raise ValueError("市场目录存在重名合约，请核实原生身份")
-                    catalog[symbol] = MarketSpec(
-                        provider=provider,
-                        symbol=symbol,
-                        market_id=m["marketId"],
-                        native_symbol=m["marketDisplayName"],
-                        quantity_step=Decimal(m["stepSize"]),
-                        price_tick=Decimal(m["tickSize"]),
-                        min_quantity=Decimal(m["minOrderSize"]),
-                        min_notional=Decimal(m["minOrderNotional"]),
-                        tick_tiers=m["tickTiers"],
-                    )
-            else:
-                response = await self.request(provider, "GET", "/api/v1/orderBookDetails")
-                for m in response["order_book_details"]:
-                    if m["market_type"] != "perp" or m["status"] != "active":
-                        continue
-                    symbol = m["symbol"]
-                    if symbol in catalog:
-                        raise ValueError("市场目录存在重名合约")
-                    if Decimal(str(m["multiplier"])) != 1:
-                        continue
-                    catalog[symbol] = MarketSpec(
-                        provider=provider,
-                        symbol=symbol,
-                        market_id=m["market_id"],
-                        native_symbol=m["symbol"],
-                        quantity_step=Decimal(10) ** -m["supported_size_decimals"],
-                        price_tick=Decimal(10) ** -m["supported_price_decimals"],
-                        min_quantity=Decimal(m["min_base_amount"]),
-                        min_notional=Decimal(m["min_quote_amount"]),
-                    )
-            self.catalogs[provider] = catalog
+    async def catalog(self, provider: Provider, *, refresh: bool = False) -> list[str]:
+        async with self.catalog_locks.setdefault(provider, asyncio.Lock()):
+            if refresh or provider not in self.catalogs or time.time() - self.catalog_checked[provider] >= 300:
+                self.catalogs[provider] = await self._load_catalog(provider)
+                self.catalog_checked[provider] = time.time()
         return sorted(self.catalogs[provider])
+
+    async def _load_catalog(self, provider: Provider) -> dict[str, MarketSpec]:
+        catalog: dict[str, MarketSpec] = {}
+        if provider == Provider.ENTROPY:
+            from .entropy import entropy_catalog
+
+            catalog = await entropy_catalog(self)
+        elif provider == Provider.ARCUS:
+            response = await self.request(provider, "GET", "/v1/markets")
+            for m in response["markets"]:
+                if m["type"] != "PERPETUAL" or m["status"] != "ONLINE":
+                    continue
+                symbol = m["baseAsset"]
+                if symbol in catalog:
+                    raise ValueError("市场目录存在重名合约，请核实原生身份")
+                catalog[symbol] = MarketSpec(
+                    provider=provider,
+                    symbol=symbol,
+                    market_id=m["marketId"],
+                    native_symbol=m["marketDisplayName"],
+                    quantity_step=Decimal(m["stepSize"]),
+                    price_tick=Decimal(m["tickSize"]),
+                    min_quantity=Decimal(m["minOrderSize"]),
+                    min_notional=Decimal(m["minOrderNotional"]),
+                    tick_tiers=m["tickTiers"],
+                )
+        else:
+            response = await self.request(provider, "GET", "/api/v1/orderBookDetails")
+            for m in response["order_book_details"]:
+                if m["market_type"] != "perp" or m["status"] != "active":
+                    continue
+                symbol = m["symbol"]
+                if symbol in catalog:
+                    raise ValueError("市场目录存在重名合约")
+                catalog[symbol] = MarketSpec(
+                    provider=provider,
+                    symbol=symbol,
+                    market_id=m["market_id"],
+                    native_symbol=m["symbol"],
+                    quantity_step=Decimal(10) ** -m["supported_size_decimals"],
+                    price_tick=Decimal(10) ** -m["supported_price_decimals"],
+                    min_quantity=Decimal(m["min_base_amount"]),
+                    min_notional=Decimal(m["min_quote_amount"]),
+                )
+        return catalog
 
     async def spec(self, provider: Provider, symbol: str) -> MarketSpec:
         await self.catalog(provider)

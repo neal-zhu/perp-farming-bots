@@ -34,7 +34,7 @@ Native signer selection is serialized and re-created for each use so equal accou
 
 [Truststore](https://truststore.readthedocs.io/en/latest/) is an MIT dependency. HTTPX uses its explicit SSLContext, preserving certificate checks while trusting OS-managed certificate authorities. Actual Arcus/Core/RH public books were read with it. No insecure certificate bypass or generated quote fallback exists.
 
-Initial executable pair assets are BTC, ETH and SOL: Arcus crypto perpetual base metadata and Lighter unit-multiplier 1 market metadata establish the units used here. RWA symbols and non-unit multipliers are excluded pending separate native-instrument review.
+Active native perpetual catalogs supply ticker choices. Arcus categories and Lighter multiplier values do not impose an asset whitelist. Each ticker’s native price, quantity step and minimum order rules are used independently; no cross-venue asset-equivalence comparison or ticker-based quantity conversion is performed.
 
 ## Funding display
 

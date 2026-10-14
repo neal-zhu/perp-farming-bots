@@ -6,7 +6,7 @@ from conftest import connection_value
 from pydantic import ValidationError
 
 from perp_farming_bots.models import BotCreate, BotState, HedgeParameters, Provider
-from perp_farming_bots.runtime import Runtime, bounded_price, common_step
+from perp_farming_bots.runtime import Runtime, bounded_price, quantity_floor
 from perp_farming_bots.store import fills
 
 
@@ -18,7 +18,7 @@ def make_bot(store, a, b, *, name="bot", request="request-0001", amount="1000"):
             parameters=HedgeParameters(
                 long_connection_id=a.id,
                 short_connection_id=b.id,
-                symbol="BTC",
+                long_symbol="BTC", short_symbol="BTC",
                 threshold_pct=Decimal("-0.1"),
                 target_usd=Decimal(amount),
             ),
@@ -54,7 +54,7 @@ async def test_partial_first_leg_sizes_peer_from_actual_fill(env):
     bot = await open_bot(store, runtime, a, b, amount="120.002")
     assert store.positions(bot.id)[0].quantity == Decimal("0.001")
     assert runtime.accounts.adapter(b.id).sent[0].quantity == Decimal("0.001")
-    assert "目标 0.002" in bot.reason
+    assert "已建仓：多" in bot.reason and "/ 空 0.001 BTC" in bot.reason
 
 
 async def test_peer_partial_fill_retains_actual_exposure_without_risk_trade(env):
@@ -259,7 +259,7 @@ async def test_request_id_and_native_account_identity_are_unique(env):
         await runtime.accounts.add(connection_value(0, "new key same account"))
     with pytest.raises(ValidationError):
         HedgeParameters(
-            long_connection_id=a.id, short_connection_id=a.id, symbol="BTC", threshold_pct=0, target_usd=100
+            long_connection_id=a.id, short_connection_id=a.id, long_symbol="BTC", short_symbol="BTC", threshold_pct=0, target_usd=100
         )
     with pytest.raises(ValidationError):
         BotCreate(request_id="future-request", name="grid", strategy="grid", parameters=bot.parameters)
@@ -277,7 +277,7 @@ async def test_restart_does_not_repeat_completed_entry(env):
 
 async def test_rounding_is_shared_and_price_tiers_are_applied(env):
     _, runtime, a, _ = env
-    assert common_step(Decimal("0.003"), Decimal("0.002")) == Decimal("0.006")
+    assert quantity_floor(Decimal("0.007"), Decimal("0.003")) == Decimal("0.006")
     spec = await runtime.markets.spec(a.provider, "BTC")
     spec.tick_tiers = [{"upToPrice": "100", "tick": "0.1"}, {"tick": "0.5"}]
     assert bounded_price(Decimal("99.99"), spec, "buy") == Decimal("100.0")

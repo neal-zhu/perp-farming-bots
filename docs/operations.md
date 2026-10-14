@@ -81,7 +81,7 @@ For Docker, rebuild after stopping and backing up the volume:
 docker compose up --build -d
 ```
 
-Current storage uses **SQLite schema 9**. The application rejects unsupported versions and does not silently convert old bot configurations. Do not delete funded inventory or recovery evidence to bypass this check.
+Current storage uses **SQLite schema 10**. The application rejects unsupported versions and does not silently convert old bot configurations. Do not delete funded inventory or recovery evidence to bypass this check.
 
 ## Back up and restore
 

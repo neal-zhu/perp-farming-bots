@@ -26,7 +26,7 @@ Do not copy, import, transplant or depend on code, tests, fixtures, configuratio
 
 - Unknown order, fill, fee, balance, funding and point states must remain explicit. Never substitute zero or guessed success.
 - Do not add compatibility shims, silent fallback fields or dual representations that conceal correctness.
-- Use Decimal for money/quantity/rate calculations. Native IDs, units, precision and account ownership require evidence; a matching ticker or close price is insufficient.
+- Use Decimal for money/quantity/rate calculations. Validate native order IDs, precision and account ownership. Users select each hedge leg's native ticker independently; do not verify cross-venue asset equivalence or impose an asset whitelist.
 - Prepare without sending, encrypt/journal before sending, send once, then query the original identity. An ACK, HTTP timeout or missing record is not fill evidence.
 - Never bypass an unresolved order by resetting/deleting local records, replaying a write or inventing a compensating trade.
 

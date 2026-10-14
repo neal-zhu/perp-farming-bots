@@ -96,9 +96,9 @@ def register_routes(app: FastAPI, store: Store, runtime: Runtime, notifications:
         return {"deleted": True}
 
     @app.get("/api/connections/{connection_id}/markets")
-    async def markets(connection_id: str):
+    async def markets(connection_id: str, refresh: bool = False):
         connection = store.connection(connection_id)
-        return {"symbols": await runtime.markets.catalog(connection.provider)}
+        return {"symbols": await runtime.markets.catalog(connection.provider, refresh=refresh)}
 
     @app.get("/api/connections/{connection_id}/margin/{symbol}")
     async def account_margin(connection_id: str, symbol: str):

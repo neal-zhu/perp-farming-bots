@@ -45,14 +45,6 @@ def transient_read(exc: Exception) -> bool:
 UNRESOLVED = {"prepared", "submitting", "submitted", "unknown"}
 
 
-def common_step(a: Decimal, b: Decimal) -> Decimal:
-    a_exponent, b_exponent = a.as_tuple().exponent, b.as_tuple().exponent
-    if not isinstance(a_exponent, int) or not isinstance(b_exponent, int):
-        raise ValueError("数量精度必须是有限数字")
-    scale = Decimal(10) ** -min(a_exponent, b_exponent)
-    return Decimal(math.lcm(int(a * scale), int(b * scale))) / scale
-
-
 def quantity_floor(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
 
@@ -171,8 +163,8 @@ class Runtime:
             return {"position": data.model_dump(mode="json")}
         assert isinstance(p, HedgeParameters)
         long, short = await asyncio.gather(
-            self.markets.funding(self.store.connection(p.long_connection_id).provider, p.symbol),
-            self.markets.funding(self.store.connection(p.short_connection_id).provider, p.symbol),
+            self.markets.funding(self.store.connection(p.long_connection_id).provider, p.long_symbol),
+            self.markets.funding(self.store.connection(p.short_connection_id).provider, p.short_symbol),
         )
         net = None
         if (
@@ -212,6 +204,10 @@ class Runtime:
         self, value: BotCreate | BotUpdate, *, bot_id: str | None = None
     ) -> None:
         if not isinstance(value.parameters, GridParameters):
+            await asyncio.gather(*(
+                self.markets.spec(self.store.connection(connection_id).provider, symbol)
+                for connection_id, symbol in value.parameters.market_bindings
+            ))
             return
         if bot_id is not None:
             previous = self.store.bot(bot_id)
@@ -242,25 +238,27 @@ class Runtime:
             self.store.connection(p.short_connection_id),
         )
         long_book, short_book, long_spec, short_spec = await asyncio.gather(
-            self.markets.book(long.provider, p.symbol),
-            self.markets.book(short.provider, p.symbol),
-            self.markets.spec(long.provider, p.symbol),
-            self.markets.spec(short.provider, p.symbol),
+            self.markets.book(long.provider, p.long_symbol),
+            self.markets.book(short.provider, p.short_symbol),
+            self.markets.spec(long.provider, p.long_symbol),
+            self.markets.spec(short.provider, p.short_symbol),
         )
         require_fresh_book(long_book)
         require_fresh_book(short_book)
-        quantity = quantity_floor(
-            p.target_usd / long_book.asks[0].price,
-            common_step(long_spec.quantity_step, short_spec.quantity_step),
-        )
-        if quantity <= 0:
-            raise ValueError("金额不足以生成符合两边精度的数量")
-        long_price, short_price = long_book.vwap("buy", quantity), short_book.vwap("sell", quantity)
-        for spec, price in [(long_spec, long_price), (short_spec, short_price)]:
+        long_quantity = quantity_floor(p.target_usd / long_book.asks[0].price, long_spec.quantity_step)
+        short_quantity = quantity_floor(p.target_usd / short_book.bids[0].price, short_spec.quantity_step)
+        if long_quantity <= 0 or short_quantity <= 0:
+            raise ValueError("金额不足以生成符合所选合约精度的数量")
+        long_price = long_book.vwap("buy", long_quantity)
+        short_price = short_book.vwap("sell", short_quantity)
+        for spec, price, quantity in [
+            (long_spec, long_price, long_quantity), (short_spec, short_price, short_quantity)
+        ]:
             if quantity < spec.min_quantity or quantity * price < spec.min_notional:
-                raise ValueError("金额低于交易所最小下单限制")
+                raise ValueError(f"{spec.symbol} 金额低于交易所最小下单限制")
         return Preview(
-            quantity=quantity,
+            long_quantity=long_quantity,
+            short_quantity=short_quantity,
             long_price=long_price,
             short_price=short_price,
             spread_pct=(short_price / long_price - 1) * 100,
@@ -272,11 +270,42 @@ class Runtime:
     def _direction_conflict(self, bot: Bot) -> None:
         assert isinstance(bot.parameters, HedgeParameters)
         self.store.check_grid_reservation(bot)
-        desired = {bot.parameters.long_connection_id: "long", bot.parameters.short_connection_id: "short"}
+        p = bot.parameters
+        desired = {(p.long_connection_id, p.long_symbol): "long", (p.short_connection_id, p.short_symbol): "short"}
         for position in self.store.positions():
-            if position.symbol == bot.parameters.symbol and position.connection_id in desired:
-                if position.role != desired[position.connection_id]:
+            binding = position.connection_id, position.symbol
+            if binding in desired:
+                if position.role != desired[binding]:
                     raise ValueError("该账户合约被其他 Bot 持有相反方向，请选择另一个账户实例")
+
+    def _hedge_complete(self, bot_id: str, op_id: str | None = None) -> bool:
+        """Verify each leg against its own journal, never compare different contract quantities."""
+        p = self.store.bot(bot_id).parameters
+        assert isinstance(p, HedgeParameters)
+        op_id = op_id or self.store.cycle(bot_id)["open_operation_id"]
+        orders_in_pair = [o for o in self.store.bot_orders(bot_id) if o["operation_id"] == op_id]
+        owned = self.store.positions(bot_id)
+        if len(orders_in_pair) != 2 or len(owned) != 2:
+            return False
+        for role, connection_id in [("long", p.long_connection_id), ("short", p.short_connection_id)]:
+            matches = [o for o in orders_in_pair if o["role"] == role]
+            position = next((position for position in owned if position.role == role), None)
+            if len(matches) != 1 or position is None:
+                return False
+            order = matches[0]
+            intent, result = OrderIntent.model_validate(order["intent"]), order["result"]
+            if (
+                not order["applied"] or result is None or result["status"] == "unknown"
+                or result["quantity"] is None or Decimal(result["quantity"]) <= 0
+                or intent.reduce_only or intent.connection_id != connection_id
+                or intent.side != ("buy" if role == "long" else "sell")
+                or intent.symbol != p.symbol_for(role)
+                or (position.connection_id, position.symbol) != (connection_id, intent.symbol)
+                or position.quantity != Decimal(result["quantity"])
+                or role == "short" and position.quantity != intent.quantity
+            ):
+                return False
+        return True
 
     async def _check_inventory(self, connection_id: str, symbol: str) -> None:
         for order in self.store.rows(orders):
@@ -320,8 +349,8 @@ class Runtime:
                     self.store.check_strategy_accounts(bot.parameters, bot_id=bot_id)
                     self._direction_conflict(bot)
                     await self.preview(bot)
-                    for connection_id in bot.parameters.connection_ids:
-                        await self._check_inventory(connection_id, bot.parameters.symbol)
+                    for connection_id, symbol in bot.parameters.market_bindings:
+                        await self._check_inventory(connection_id, symbol)
                     self.store.restart_closed_bot(bot_id)
                     return
                 if bot.state not in {BotState.READY, BotState.PAUSED}:
@@ -333,7 +362,7 @@ class Runtime:
                 if owned:
                     if bot.state != BotState.PAUSED:
                         raise ValueError("待运行状态不应已有持仓，请同步并核实")
-                    if len(owned) != 2 or owned[0].quantity != owned[1].quantity:
+                    if not self._hedge_complete(bot_id):
                         raise ValueError("持仓尚未形成匹配的双腿，请先处理；运行不会补腿")
                     for position in owned:
                         await self._check_inventory(position.connection_id, position.symbol)
@@ -343,11 +372,8 @@ class Runtime:
                     if self.store.cycle(bot_id)["open_operation_id"] is not None:
                         raise ValueError("本轮已执行过建仓且无持仓，请先核实原订单")
                     await self.preview(bot)
-                    for connection_id in [
-                        bot.parameters.long_connection_id,
-                        bot.parameters.short_connection_id,
-                    ]:
-                        await self._check_inventory(connection_id, bot.parameters.symbol)
+                    for connection_id, symbol in bot.parameters.market_bindings:
+                        await self._check_inventory(connection_id, symbol)
                     self.store.set_state(bot_id, BotState.WAITING, "等待价差达到条件后建仓")
             elif action == "pause":
                 idle_attention = bot.state == BotState.ATTENTION and not self.store.positions(bot_id)
@@ -387,12 +413,16 @@ class Runtime:
         grid_bounds: tuple[Decimal, Decimal] | None = None,
     ) -> OrderResult:
         account = self.store.connection(connection_id)
+        symbol = (
+            bot.parameters.symbol if isinstance(bot.parameters, GridParameters)
+            else bot.parameters.symbol_for(role)
+        )
         if isinstance(bot.parameters, GridParameters) and not reduce_only:
             await self.margin.verify(bot.parameters)
-        spec = await self.markets.spec(account.provider, bot.parameters.symbol)
+        spec = await self.markets.spec(account.provider, symbol)
         if quantity_floor(quantity, spec.quantity_step) != quantity:
             raise ValueError("实际数量不符合该交易所精度，请在交易所处理残余数量")
-        book = await self.markets.book(account.provider, bot.parameters.symbol, refresh=True)
+        book = await self.markets.book(account.provider, symbol, refresh=True)
         require_fresh_book(book)
         if grid_bounds is not None:
             midpoint = (book.bids[0].price + book.asks[0].price) / 2
@@ -420,7 +450,7 @@ class Runtime:
         )
         intent = OrderIntent(
             connection_id=connection_id,
-            symbol=bot.parameters.symbol,
+            symbol=symbol,
             side=side,
             quantity=quantity,
             limit_price=price,
@@ -505,9 +535,9 @@ class Runtime:
                         f"当前价差 {preview.spread_pct:.4f}% / 条件 {bot.parameters.threshold_pct}%",
                     )
                     return False
-                for connection_id in [bot.parameters.long_connection_id, bot.parameters.short_connection_id]:
-                    await self._check_inventory(connection_id, bot.parameters.symbol)
-                    if self.accounts.snapshots[connection_id].available < bot.parameters.target_usd:
+                for connection_id, symbol in bot.parameters.market_bindings:
+                    await self._check_inventory(connection_id, symbol)
+                    if await self.accounts.available(connection_id, symbol) < bot.parameters.target_usd:
                         raise ValueError("账户可用抵押资产不足以覆盖单侧目标金额，请调整金额")
             except ValueError as exc:
                 if transient_read(exc):
@@ -524,22 +554,24 @@ class Runtime:
                     "long",
                     bot.parameters.long_connection_id,
                     "buy",
-                    preview.quantity,
+                    preview.long_quantity,
                     False,
                     preview.long_price,
                 )
-                if first.quantity is None or first.quantity == 0:
+                if first.quantity is None or first.quantity == 0 or first.average_price is None:
                     raise ValueError("做多订单未成交，未提交做空订单")
                 short_account = self.store.connection(bot.parameters.short_connection_id)
-                short_spec = await self.markets.spec(short_account.provider, bot.parameters.symbol)
-                short_quantity = quantity_floor(first.quantity, short_spec.quantity_step)
+                short_spec = await self.markets.spec(short_account.provider, bot.parameters.short_symbol)
+                short_quantity = quantity_floor(
+                    first.quantity * first.average_price / preview.short_price, short_spec.quantity_step
+                )
                 if short_quantity <= 0:
                     raise ValueError("第一腿成交不足第二腿最小数量，保留实际持仓并告警")
                 second = await self._execute(
                     bot, op_id, "short", short_account.id, "sell", short_quantity, False, preview.short_price
                 )
-                if second.quantity != first.quantity:
-                    raise ValueError("两腿实际成交数量不匹配，需要处理；不会自动追加或止损")
+                if second.quantity != short_quantity:
+                    raise ValueError("做空腿未完成计划数量，需要处理；不会自动追加或止损")
             except Exception as exc:
                 if transient_read(exc) and not any(
                     o["operation_id"] == op_id for o in self.store.bot_orders(bot.id)
@@ -558,7 +590,7 @@ class Runtime:
             self.store.complete_open(
                 bot.id,
                 op_id,
-                f"两腿已建仓 {first.quantity} {bot.parameters.symbol} / 目标 {preview.quantity}；不自动追加",
+                f"已建仓：多 {first.quantity} {bot.parameters.long_symbol} / 空 {second.quantity} {bot.parameters.short_symbol}；不自动追加",
             )
             self.store.alert(f"{bot.name} 建仓完成", bot.id)
             return True
@@ -575,8 +607,7 @@ class Runtime:
                 or time.time() < due
             ):
                 return False
-            owned = self.store.positions(bot_id)
-            if self.store.bot_pending(bot_id) or len(owned) != 2 or owned[0].quantity != owned[1].quantity:
+            if self.store.bot_pending(bot_id) or not self._hedge_complete(bot_id):
                 self.store.disarm_reopen(bot_id)
                 self.store.set_state(
                     bot_id, BotState.ATTENTION, "定期重开前订单或双腿持仓未确认，已停止自动动作"
@@ -677,8 +708,7 @@ class Runtime:
                 self.store.disarm_reopen(bot_id)
             elif (
                 latest["kind"] == "open"
-                and len(inventory) == 2
-                and inventory[0].quantity == inventory[1].quantity
+                and self._hedge_complete(bot_id, latest["id"])
             ):
                 self.store.complete_open(bot_id, latest["id"], "原建仓订单已确认完成")
             else:
@@ -688,7 +718,7 @@ class Runtime:
                     p = inventory[0]
                     message = f"单腿持仓：{'多仓' if p.role == 'long' else '空仓'} {p.quantity} {p.symbol}；请自行处理"
                 else:
-                    message = "两腿持仓数量不匹配，请查看实际成交并自行处理"
+                    message = "双腿尚未完成计划数量，请查看实际成交并自行处理"
                 self.store.set_state(bot_id, BotState.ATTENTION, message)
                 # Preserve the original failure evidence instead of replacing it
                 # with a generic message on every background synchronization.

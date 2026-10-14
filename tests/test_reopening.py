@@ -212,7 +212,7 @@ def test_invalid_reopening_parameters_are_rejected(changes):
         HedgeParameters(
             long_connection_id="a",
             short_connection_id="b",
-            symbol="BTC",
+            long_symbol="BTC", short_symbol="BTC",
             threshold_pct=0,
             target_usd=100,
             **changes,

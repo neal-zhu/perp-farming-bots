@@ -24,9 +24,9 @@ async def test_edit_waiting_bot_requires_explicit_restart_and_sends_no_orders(en
     store, runtime, a, b = env
     bot = make_bot(store, a, b)
     await runtime.command(bot.id, "run")
-    updated = store.update_bot(bot.id, edit(bot, symbol="ETH", target_usd="250", threshold_pct="0.2"))
+    updated = store.update_bot(bot.id, edit(bot, long_symbol="ETH", short_symbol="ETH", target_usd="250", threshold_pct="0.2"))
     assert updated.state == BotState.READY
-    assert updated.parameters.symbol == "ETH"
+    assert updated.parameters.long_symbol == updated.parameters.short_symbol == "ETH"
     assert updated.parameters.target_usd == Decimal("250")
     assert updated.id == bot.id and updated.request_id == bot.request_id
     assert not await runtime.try_open(bot.id)
@@ -40,7 +40,7 @@ async def test_rename_waiting_bot_preserves_waiting_state(env):
     assert store.update_bot(bot.id, edit(bot)).state == BotState.WAITING
 
 
-@pytest.mark.parametrize("change", [{"symbol": "ETH"}, {"target_usd": "250"}, {"threshold_pct": "0.2"}])
+@pytest.mark.parametrize("change", [{"long_symbol": "ETH"}, {"target_usd": "250"}, {"threshold_pct": "0.2"}])
 async def test_executed_bot_cannot_rebind_entry_parameters(env, change):
     store, runtime, a, b = env
     bot = await open_bot(store, runtime, a, b)

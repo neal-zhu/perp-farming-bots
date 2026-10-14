@@ -1,11 +1,12 @@
-"""Entropy's standard crypto markets settle on Hyperliquid's main perpetual DEX.
+"""Entropy main and io perpetual markets use Hyperliquid's native transport.
 
 Only official SDK signing is reused. HTTP transport stays in the shared journaled
-executor. Entropy's own HIP-3 instruments are separate markets and are not aliases.
+executor. Qualified HIP-3 ticker names and margin domains remain distinct.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from decimal import Decimal
@@ -16,7 +17,6 @@ from hyperliquid.utils.signing import sign_l1_action
 
 from .markets import Markets
 from .models import (
-    SUPPORTED_ASSETS,
     AccountSnapshot,
     GridMarginCapital,
     MarginSnapshot,
@@ -75,47 +75,62 @@ def number(value: Any) -> Decimal:
 
 
 async def market_rules(markets: Markets, spec: MarketSpec) -> dict[str, Any]:
-    meta = await markets.entropy_info("meta", dex="")
-    if not 0 <= spec.market_id < len(meta["universe"]):
+    dex = market_dex(spec.native_symbol)
+    meta = await markets.entropy_info("meta", dex=dex)
+    index = spec.market_id % 10000 if dex else spec.market_id
+    if not 0 <= index < len(meta["universe"]):
         raise ValueError("Entropy 原生合约编号无效")
-    row = meta["universe"][spec.market_id]
+    row = meta["universe"][index]
     if row["name"] != spec.native_symbol or row.get("isDelisted") is True:
         raise ValueError("Entropy 原生市场身份或状态不符")
     return row
 
 
+def market_dex(symbol: str) -> str:
+    return symbol.split(":", 1)[0] if ":" in symbol else ""
+
+
 async def entropy_catalog(markets: Markets) -> dict[str, MarketSpec]:
-    meta = await markets.entropy_info("meta", dex="")
+    dexs = await markets.entropy_info("perpDexs")
+    groups = [(0, "")] + [(index, row["name"]) for index, row in enumerate(dexs) if row and row["name"] == "io"]
+    metas = await asyncio.gather(*(markets.entropy_info("meta", dex=dex) for _, dex in groups))
     catalog = {}
-    for index, row in enumerate(meta["universe"]):
-        symbol = row["name"]
-        if symbol not in SUPPORTED_ASSETS or row.get("isDelisted") is True:
-            continue
-        size_decimals = row["szDecimals"]
-        if type(size_decimals) is not int or not 0 <= size_decimals <= 6:
-            raise ValueError("Entropy 合约数量精度无效")
-        decimals = 6 - size_decimals
-        catalog[symbol] = MarketSpec(
-            provider=Provider.ENTROPY,
-            symbol=symbol,
-            native_symbol=symbol,
-            market_id=index,
-            quantity_step=Decimal(10) ** -size_decimals,
-            min_quantity=Decimal(10) ** -size_decimals,
-            min_notional=Decimal("10"),
-            price_tick=Decimal(1),
-            # 5 significant digits for fractional prices; integer prices are valid.
-            tick_tiers=[
-                {"upToPrice": str(Decimal(10) ** (exponent + 5)), "tick": str(Decimal(10) ** exponent)}
-                for exponent in range(-decimals, 0)
-            ],
-        )
+    for (dex_index, dex), meta in zip(groups, metas):
+        if meta["collateralToken"] != 0:
+            raise ValueError("Entropy 当前金额模型需要 USDC 抵押市场")
+        for index, row in enumerate(meta["universe"]):
+            symbol = row["name"]
+            if row.get("isDelisted") is True:
+                continue
+            if market_dex(symbol) != dex or symbol in catalog:
+                raise ValueError("Entropy 原生市场目录的 DEX 或 ticker 无效")
+            size_decimals = row["szDecimals"]
+            if type(size_decimals) is not int or not 0 <= size_decimals <= 6:
+                raise ValueError("Entropy 合约数量精度无效")
+            decimals = 6 - size_decimals
+            catalog[symbol] = MarketSpec(
+                provider=Provider.ENTROPY,
+                symbol=symbol,
+                native_symbol=symbol,
+                market_id=100000 + dex_index * 10000 + index if dex else index,
+                quantity_step=Decimal(10) ** -size_decimals,
+                min_quantity=Decimal(10) ** -size_decimals,
+                min_notional=Decimal("10"),
+                price_tick=Decimal(1),
+                # 5 significant digits for fractional prices; integer prices are valid.
+                tick_tiers=[
+                    {"upToPrice": str(Decimal(10) ** (exponent + 5)), "tick": str(Decimal(10) ** exponent)}
+                    for exponent in range(-decimals, 0)
+                ],
+            )
     return catalog
 
 
 async def entropy_funding(markets: Markets, spec: MarketSpec) -> dict[str, Any]:
-    meta, contexts = await markets.entropy_info("metaAndAssetCtxs", dex="")
-    if meta["universe"][spec.market_id]["name"] != spec.native_symbol:
+    dex = market_dex(spec.native_symbol)
+    index = spec.market_id % 10000 if dex else spec.market_id
+    meta, contexts = await markets.entropy_info("metaAndAssetCtxs", dex=dex)
+    if meta["universe"][index]["name"] != spec.native_symbol:
         raise ValueError("Entropy 资金费率市场身份不符")
     now = time.time()
     history = await markets.entropy_info(
@@ -127,7 +142,7 @@ async def entropy_funding(markets: Markets, spec: MarketSpec) -> dict[str, Any]:
     if last["coin"] != spec.native_symbol or not 0 <= now - last["time"] / 1000 <= 7200:
         raise ValueError("Entropy 历史资金费率身份或时间无效")
     return {
-        "predicted_rate_pct": number(contexts[spec.market_id]["funding"]) * 100,
+        "predicted_rate_pct": number(contexts[index]["funding"]) * 100,
         "last_rate_pct": number(last["fundingRate"]) * 100,
         "next_payment_at": (int(now) // 3600 + 1) * 3600,
     }
@@ -159,17 +174,22 @@ class Entropy(Adapter):
         if ENTROPY_BUILDER not in [address.lower() for address in approved]:
             raise ValueError("请先在 Entropy 官网连接此账户并完成交易授权，再连接 Bot")
 
-    async def snapshot(self) -> AccountSnapshot:
+    async def check_mode(self) -> str:
         mode = await self.markets.entropy_info("userAbstraction", user=self.value.address)
         if mode not in ALLOWED_ACCOUNT_MODES:
             raise ValueError("Entropy 统一账户或组合保证金模式暂未支持，无法确认可用保证金")
-        data = await self.markets.entropy_info("clearinghouseState", user=self.value.address, dex="")
+        return mode
+
+    async def dex_snapshot(self, dex: str) -> AccountSnapshot:
+        data = await self.markets.entropy_info("clearinghouseState", user=self.value.address, dex=dex)
         received_at = data["time"] / 1000
         if not 0 <= time.time() - received_at <= 30:
             raise ValueError("Entropy 账户快照时间无效或已过期")
         positions = []
         for entry in data["assetPositions"]:
             p = entry["position"]
+            if market_dex(p["coin"]) != dex:
+                raise ValueError("Entropy 仓位所属 DEX 与请求不符")
             quantity = number(p["szi"])
             if quantity:
                 positions.append(
@@ -187,6 +207,31 @@ class Entropy(Adapter):
             received_at=received_at,
             source="Entropy / Hyperliquid 原生账户",
         )
+
+    async def snapshot(self) -> AccountSnapshot:
+        mode = await self.check_mode()
+        symbols = await self.markets.catalog(Provider.ENTROPY)
+        dexs = sorted({""} | {market_dex(symbol) for symbol in symbols})
+        snapshots = await asyncio.gather(*(self.dex_snapshot(dex) for dex in dexs))
+        return AccountSnapshot(
+            available=snapshots[0].available if mode == "dexAbstraction" else sum(
+                (snapshot.available for snapshot in snapshots), Decimal(0)
+            ),
+            equity=sum((snapshot.equity for snapshot in snapshots), Decimal(0)),
+            positions=[position for snapshot in snapshots for position in snapshot.positions],
+            received_at=min(snapshot.received_at for snapshot in snapshots),
+            source="Entropy / Hyperliquid main + io 原生账户",
+        )
+
+    async def available(self, symbol: str) -> Decimal:
+        mode = await self.check_mode()
+        spec = await self.markets.spec(Provider.ENTROPY, symbol)
+        dex = market_dex(spec.native_symbol)
+        # DEX abstraction draws collateral from the main account. Default and
+        # disabled abstraction keep their collateral in separate native domains.
+        if mode == "dexAbstraction":
+            dex = ""
+        return (await self.dex_snapshot(dex)).available
 
     def signed(self, action: dict[str, Any]) -> dict[str, Any]:
         nonce = max(int(time.time() * 1000), self.last_nonce + 1)
@@ -308,7 +353,7 @@ class Entropy(Adapter):
         )
 
     async def open_orders(self, symbol: str) -> list[dict[str, Any]]:
-        rows = await self.markets.entropy_info("openOrders", user=self.value.address, dex="")
+        rows = await self.markets.entropy_info("openOrders", user=self.value.address, dex=market_dex(symbol))
         return [order for order in rows if order["coin"] == symbol]
 
     async def margin(self, symbol: str) -> MarginSnapshot:

@@ -31,6 +31,9 @@ class FixtureMarkets(Markets):
         super().__init__()
         self.stale = False
 
+    async def catalog(self, provider, *, refresh=False):
+        return ["BTC", "ETH", "SOL", "DOGE", "1000PEPE"]
+
     async def funding(self, provider, symbol):
         return FundingSnapshot(
             provider=provider,

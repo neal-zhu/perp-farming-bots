@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -26,7 +26,6 @@ PROVIDER_NAMES = {
     Provider.BINANCE: "Binance USD-M",
 }
 TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH, Provider.ENTROPY}
-SUPPORTED_ASSETS = {"BTC", "ETH", "SOL"}
 
 
 class BotState(StrEnum):
@@ -115,29 +114,41 @@ class Connection(StrictModel):
 class HedgeParameters(StrictModel):
     long_connection_id: str
     short_connection_id: str
-    symbol: str = Field(min_length=1, max_length=30, pattern=r"^[A-Z0-9]+$")
-    threshold_pct: Decimal = Field(ge=Decimal("-10"), le=Decimal("100"))
+    long_symbol: str = Field(min_length=1, max_length=120, pattern=r"^\S+$")
+    short_symbol: str = Field(min_length=1, max_length=120, pattern=r"^\S+$")
+    threshold_pct: Decimal = Field(gt=Decimal("-100"), allow_inf_nan=False)
     target_usd: Decimal = Field(gt=0, le=Decimal("1000000"))
     slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=Decimal("100"))
     reopen_interval_seconds: int | None = Field(default=None, ge=60, le=2592000)
     reopen_random_wait_seconds: int = Field(default=300, ge=0, le=300)
 
-    @field_validator("symbol", mode="before")
+    @field_validator("long_symbol", "short_symbol", mode="before")
     @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        return value.strip().upper()
+    def normalize_symbol(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("请选择有效的 ticker")
+        return value.strip()
 
     @model_validator(mode="after")
     def valid_pair(self) -> HedgeParameters:
         if self.long_connection_id == self.short_connection_id:
             raise ValueError("两条腿必须绑定不同账户实例；可以属于同一交易所")
-        if self.symbol not in SUPPORTED_ASSETS:
-            raise ValueError("首批支持 BTC、ETH、SOL 标准加密资产永续；其他合约等待单位核实")
         return self
 
     @property
     def connection_ids(self) -> list[str]:
         return [self.long_connection_id, self.short_connection_id]
+
+    @property
+    def market_bindings(self) -> list[tuple[str, str]]:
+        return [(self.long_connection_id, self.long_symbol), (self.short_connection_id, self.short_symbol)]
+
+    def symbol_for(self, role: str) -> str:
+        if role == "long":
+            return self.long_symbol
+        if role == "short":
+            return self.short_symbol
+        raise ValueError("对冲订单方向无效")
 
 
 GRID_DIRECTION_NAMES = {"long": "做多", "short": "做空", "neutral": "中性"}
@@ -151,7 +162,7 @@ class GridMarginCapital(StrictModel):
 
 class GridParameters(StrictModel):
     connection_id: str
-    symbol: str = Field(pattern=r"^[A-Z0-9]+$")
+    symbol: str = Field(min_length=1, max_length=120, pattern=r"^\S+$")
     direction: Literal["long", "short", "neutral"]
     lower_price: Decimal = Field(gt=0, allow_inf_nan=False)
     upper_price: Decimal = Field(gt=0, allow_inf_nan=False)
@@ -162,13 +173,13 @@ class GridParameters(StrictModel):
 
     @field_validator("symbol", mode="before")
     @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        return value.strip().upper()
+    def normalize_symbol(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("请选择有效的 ticker")
+        return value.strip()
 
     @model_validator(mode="after")
     def valid_grid(self) -> GridParameters:
-        if self.symbol not in SUPPORTED_ASSETS:
-            raise ValueError("网格支持 BTC、ETH、SOL 标准加密资产永续")
         if self.lower_price >= self.upper_price:
             raise ValueError("价格下限必须低于上限")
         if self.direction == "neutral" and self.grid_count % 2:
@@ -190,6 +201,10 @@ class GridParameters(StrictModel):
     @property
     def connection_ids(self) -> list[str]:
         return [self.connection_id]
+
+    @property
+    def market_bindings(self) -> list[tuple[str, str]]:
+        return [(self.connection_id, self.symbol)]
 
 
 class MarginSnapshot(StrictModel):
@@ -300,7 +315,8 @@ class MarketSpec(StrictModel):
 
 
 class Preview(StrictModel):
-    quantity: Decimal
+    long_quantity: Decimal
+    short_quantity: Decimal
     long_price: Decimal
     short_price: Decimal
     spread_pct: Decimal
@@ -402,7 +418,7 @@ STRATEGIES: list[StrategyDefinition] = [
         "id": "spread_hedging",
         "name": "跨账户价差对冲",
         "available": True,
-        "description": "两个账户、一个币种，价差达到条件后建仓；可设置持仓间隔，定期平仓后再次等待价差。",
+        "description": "两腿分别选择账户和合约，按单侧金额建仓；可定期平仓后再次等待价差。",
     },
     {
         "id": "grid",

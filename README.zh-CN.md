@@ -29,12 +29,12 @@ docker compose up --build -d
 
 ## 支持范围
 
-交易接入：Arcus、Lighter Core、Lighter Robinhood、Entropy。策略支持 BTC、ETH、SOL。
+交易接入：Arcus、Lighter Core、Lighter Robinhood、Entropy。合约列表直接读取交易所当前可用的永续市场，支持搜索。
 
-- 对冲：两个不同账户、一个币种，设置价差条件和单侧目标金额；可定期平仓后重新等待建仓条件。
+- 对冲：两个不同账户分别选择 ticker，设置价差条件和单侧目标金额；可定期平仓后重新等待建仓条件。
 - 网格：一个账户，设置方向、固定价格区间、格数、保证金额度、杠杆和保证金模式。程序等待价格触发后提交 IOC 订单，需要持续在线。
 - 积分：当前采集 Lighter Robinhood 自己账户的实时积分，提供历史曲线。其他平台显示“暂未接入”。
-- Entropy：使用主交易账户地址和 API 代理密钥；暂不支持统一/组合保证金、子账户、Vault 和自有 HIP-3 合约。
+- Entropy：使用主交易账户地址和 API 代理密钥；支持主市场和 Entropy 的 `io:*` 合约；暂不支持统一/组合保证金、子账户和 Vault。
 
 完整的账户填写方法、保证金计算、初始建仓、暂停与平仓、故障处理见 [使用指南](docs/guide.zh-CN.md)。
 

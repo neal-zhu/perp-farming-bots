@@ -9,6 +9,7 @@ from nicegui.elements.mixins.validation_element import ValidationElement
 from pydantic import ValidationError
 
 from .formatting import money
+from .market_ui import MarketSelector
 from .models import (
     GRID_DIRECTION_NAMES,
     PROVIDER_NAMES,
@@ -43,7 +44,7 @@ def grid_dialog(
         name = (
             ui.input(
                 "Bot 名称 *",
-                value=bot.name if bot else "BTC 网格",
+                value=bot.name if bot else "永续网格",
                 validation={"请输入 Bot 名称": lambda v: isinstance(v, str) and bool(v.strip())},
             )
             .without_auto_validation()
@@ -89,11 +90,11 @@ def grid_dialog(
                 .props("outlined dense hide-bottom-space")
                 .classes("flex-1 min-w-48")
             )
-            symbol = (
-                ui.select(["BTC", "ETH", "SOL"], label="币种", value=p.symbol if p else "BTC")
-                .props("outlined dense hide-bottom-space")
-                .classes("w-32")
-            )
+        ticker = MarketSelector(
+            store, runtime.markets, account, label="币种", value=p.symbol if p else None,
+            enabled=editable["binding_parameters"],
+        )
+        symbol = ticker.select
         with ui.row().classes("w-full gap-4"):
             lower = (
                 ui.number(
@@ -123,6 +124,10 @@ def grid_dialog(
             )
 
         async def fill_range():
+            await ticker.ensure_loaded()
+            if not ticker.valid():
+                error.set_text("请先选择可用的合约")
+                return
             revision = input_revision
             requested_symbol, requested_account = symbol.value, account.value
             try:
@@ -234,6 +239,9 @@ def grid_dialog(
 
         async def inspect_native():
             nonlocal native_description
+            if not symbol.value:
+                native_info.set_text("选择合约后显示杠杆上限与当前设置")
+                return
             requested_account, requested_symbol = account.value, symbol.value
             native_description = None
             native_info.set_text("正在读取交易所杠杆上限与当前设置…")
@@ -322,7 +330,7 @@ def grid_dialog(
                 lower.set_value(None)
                 upper.set_value(None)
 
-        symbol.on_value_change(lambda: invalidate(clear_range=True))
+        symbol.on_value_change(lambda: invalidate(clear_range=not ticker.loading or ticker.loaded_account is not None))
         for input_control in [
             account,
             direction,
@@ -361,11 +369,17 @@ def grid_dialog(
         def validate() -> bool:
             controls: list[ValidationElement] = [name, lower, upper, count, budget, leverage, slippage]
             valid = all([control.validate() for control in controls])
+            if not ticker.valid():
+                error.set_text("请先选择可用的合约；列表读取失败时点击刷新重试")
+                return False
             error.set_text("" if valid else "请先修正标红的字段。")
             return valid
 
         async def save():
             nonlocal busy
+            if busy:
+                return
+            await ticker.ensure_loaded()
             if busy or not validate():
                 return
             busy = True

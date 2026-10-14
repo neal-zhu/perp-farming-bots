@@ -34,13 +34,13 @@ The default setup is local only. **The UI and API have no authentication**; keep
 | Arcus | Native perpetual account and IOC execution | Not integrated |
 | Lighter Core | Official native signing SDK and IOC execution | Not integrated |
 | Lighter Robinhood | Separate native deployment and signing domain | Live total and historical chart |
-| Entropy | BTC/ETH/SOL on Hyperliquid's standard perpetual DEX | Not integrated |
+| Entropy | Hyperliquid main and Entropy `io:*` perpetual markets | Not integrated |
 
-Bot strategies accept **BTC, ETH and SOL**. Entropy requires a main trading account and a registered API agent; unified/portfolio margin, subaccounts, vaults and its own HIP-3 instruments are excluded. See [exchange setup and verified scope](docs/exchanges.md).
+Ticker lists come from each selected venue’s active perpetual market catalog and are searchable. Each hedge leg selects its own ticker; the application performs no cross-venue asset-equivalence validation. Entropy requires a main trading account and a registered API agent; unified/portfolio margin, subaccounts and vaults are excluded. See [exchange setup and verified scope](docs/exchanges.md).
 
 ## How bots work
 
-- **Spread hedging:** bind two different account instances, choose a symbol, spread threshold and target amount per leg. The second leg follows the first leg's confirmed fill. Optional timed reopening closes the owned pair, waits a bounded random interval and checks the spread again.
+- **Spread hedging:** bind two different account instances and select each leg’s ticker, spread threshold and target USD amount per leg. Quantities use each market’s own price and precision; the second leg follows the first leg’s confirmed fill notional. Optional timed reopening closes the owned pair, waits a bounded random interval and checks the spread again.
 - **Grid:** bind one account, choose long/short/neutral, a fixed price range, grid count, investment margin, leverage and margin mode. The program watches prices and sends an IOC order when the next line is reached. Grid lines are conditional plans; orders are not placed on the exchange in advance.
 - **Run / Pause / Close:** Run enables or resumes the selected strategy; Pause keeps positions; Close handles only that bot's allocated inventory. A confirmed closed bot can run again.
 

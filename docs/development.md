@@ -32,6 +32,7 @@ Do not use an existing data directory or account keys as test fixtures. Do not s
 | Change | Implementation | Focused tests |
 | --- | --- | --- |
 | Parameters, strategy catalog or public input | [models.py](../src/perp_farming_bots/models.py), [api.py](../src/perp_farming_bots/api.py) | [test_api.py](../tests/test_api.py), [test_grid.py](../tests/test_grid.py) |
+| Native ticker catalogs and form selection | [markets.py](../src/perp_farming_bots/markets.py), [market_ui.py](../src/perp_farming_bots/market_ui.py) | [test_market_selection.py](../tests/test_market_selection.py), [test_entropy.py](../tests/test_entropy.py) |
 | Account form validation | [ui.py](../src/perp_farming_bots/ui.py) | [test_account_form.py](../tests/test_account_form.py) |
 | Native orders, fees and signing | [trading.py](../src/perp_farming_bots/trading.py), [entropy.py](../src/perp_farming_bots/entropy.py) | [test_trading.py](../tests/test_trading.py), [test_entropy.py](../tests/test_entropy.py) |
 | Ownership, hedge entry/close or restart | [runtime.py](../src/perp_farming_bots/runtime.py), [store.py](../src/perp_farming_bots/store.py) | [test_runtime.py](../tests/test_runtime.py), [test_lifecycle.py](../tests/test_lifecycle.py) |

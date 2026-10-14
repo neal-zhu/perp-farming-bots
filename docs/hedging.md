@@ -4,9 +4,9 @@ Strategy ID: `spread_hedging`. Implementation: [runtime.py](../src/perp_farming_
 
 ## Entry
 
-Bind two different account instances, a supported symbol, long/short direction, spread threshold, target USD amount per side and slippage bound. Direction remains fixed; waiting does not swap the chosen accounts.
+Bind two different account instances. Select `long_symbol` and `short_symbol` independently from their venues’ active perpetual catalogs, plus the spread threshold, target USD amount per side and slippage bound. No cross-venue asset-equivalence validation is performed. Direction and ticker remain fixed; waiting does not swap them.
 
-The common quantity is the long target divided by the executable long-side price, floored to a quantity step valid on both venues. Native minimum quantity/notional and inventory checks apply. Entry spread uses executable depth for that quantity:
+Each preview quantity is the target USD amount divided by that leg’s native price, floored to that market’s quantity step. Native minimum quantity/notional and inventory checks apply independently. Entry spread compares the selected contracts’ executable prices directly:
 
 ```text
 spread_pct = (short_sell_price / long_buy_price - 1) × 100
@@ -14,7 +14,7 @@ spread_pct = (short_sell_price / long_buy_price - 1) × 100
 
 Entry requires `spread_pct >= threshold_pct`. Available collateral must cover the target amount per leg; the strategy uses existing venue leverage/margin settings rather than configuring them.
 
-The first long order is journaled and sent once. Its confirmed filled quantity determines the short order's quantity after the short venue's step check. No confirmed first fill means no second leg. Partial or mismatched fills retain actual allocations, report the exposure and stop new strategy actions; the runtime does not automatically compensate, top up or add a missing leg.
+The first long order is journaled and sent once. Its confirmed fill notional (quantity × average price) determines the short order’s quantity, divided by the short quote and floored to that market’s step. No confirmed first fill means no second leg. A confirmed partial first fill can form a pair when the second leg fills its adjusted plan. Unequal contract quantities are expected; completion, resume, closing and reopening validate each leg against its own journal. Partial second fills retain actual allocations, report the exposure and stop new strategy actions; the runtime does not automatically compensate, top up or add a missing leg.
 
 ## Close and reopening
 
@@ -22,10 +22,10 @@ Close first compares native inventory with all bot allocations for each account/
 
 Optional reopening starts its interval after both entry legs are confirmed. When due, it closes the allocated pair. Only fully confirmed closure advances the cycle. A uniformly sampled integer delay from 0 to `reopen_random_wait_seconds` is persisted, then the original spread condition is checked again. The random upper bound is at most 300 seconds.
 
-Pause keeps inventory and disarms the reopen interval. Run with a matched pair starts a fresh interval. Manual Close ends the cycle. A temporary read outage before any order journal can skip and retry an automatic action; unknown or partial writes query the original operation and never start a replacement cycle.
+Pause keeps inventory and disarms the reopen interval. Run with a fully confirmed pair starts a fresh interval. Manual Close ends the cycle. A temporary read outage before any order journal can skip and retry an automatic action; unknown or partial writes query the original operation and never start a replacement cycle.
 
 ## State and sharing
 
 Each cycle has one original entry operation identity. Compatible same-direction spread bots can share a native account/symbol, but allocations and Close remain bot-specific. Conflicting directions, a grid reservation, external inventory, open native orders and unresolved local orders block new actions.
 
-Tests: [runtime](../tests/test_runtime.py), [reopening](../tests/test_reopening.py), [read outages](../tests/test_read_outages.py), [lifecycle](../tests/test_lifecycle.py). Native protocol evidence: [Arcus/Lighter](research/native-execution.md), [Entropy](research/entropy.md).
+Tests: [independent ticker selection](../tests/test_market_selection.py), [runtime](../tests/test_runtime.py), [reopening](../tests/test_reopening.py), [read outages](../tests/test_read_outages.py), [lifecycle](../tests/test_lifecycle.py). Native protocol evidence: [Arcus/Lighter](research/native-execution.md), [Entropy](research/entropy.md).

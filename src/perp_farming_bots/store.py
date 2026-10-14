@@ -208,8 +208,8 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 9}:
-                raise ValueError(f"Unsupported database schema version {version}; expected 9")
+            if version not in {0, 10}:
+                raise ValueError(f"Unsupported database schema version {version}; expected 10")
             if (
                 version == 0
                 and db.exec_driver_sql(
@@ -220,7 +220,7 @@ class Store:
                 raise ValueError("Database has no schema version; use a new database")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            db.exec_driver_sql("PRAGMA user_version=9")
+            db.exec_driver_sql("PRAGMA user_version=10")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -345,8 +345,7 @@ class Store:
                 continue
             if (
                 (isinstance(parameters, GridParameters) or other.strategy == "grid")
-                and parameters.symbol == other.parameters.symbol
-                and set(parameters.connection_ids) & set(other.parameters.connection_ids)
+                and set(parameters.market_bindings) & set(other.parameters.market_bindings)
             ):
                 raise ValueError(
                     f"网格需要独占账户的该币种，已被 Bot「{other.name}」使用；请选择其他账户或币种"

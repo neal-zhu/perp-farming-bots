@@ -75,6 +75,7 @@ class Grid:
             raise ValueError("区间过窄，按交易所价格精度无法生成独立格线；请扩大区间或减少格数")
         await r._check_inventory(p.connection_id, p.symbol)
         account = r.accounts.snapshots[p.connection_id]
+        available = await r.accounts.available(p.connection_id, p.symbol)
         book = await r.markets.book(connection.provider, p.symbol, refresh=True)
         require_fresh_book(book)
         midpoint = (book.asks[0].price + book.bids[0].price) / 2
@@ -99,9 +100,9 @@ class Grid:
                 f"按此区间和 {p.grid_count} 格，保证金额度至少 ${minimum_budget_cents:,.2f}，"
                 f"每格至少 {minimum_quantity} {p.symbol}。请先核对币种和价格区间，再调整格数或预算。"
             )
-        if account.available < p.collateral_budget:
+        if available < p.collateral_budget:
             raise ValueError(
-                f"账户可用余额 ${account.available:,.2f}，低于网格资金预算 ${p.collateral_budget:,.2f}。"
+                f"账户可用余额 ${available:,.2f}，低于网格资金预算 ${p.collateral_budget:,.2f}。"
                 f"当前格数和区间最低预算 ${minimum_budget_cents:,.2f}；请调整预算或格数。"
             )
         return GridPreview(
@@ -119,7 +120,7 @@ class Grid:
             notional_limit=p.notional_limit,
             collateral_budget=p.collateral_budget,
             minimum_quantity_per_grid=minimum_quantity,
-            account_available=account.available,
+            account_available=available,
             account_checked_at=account.received_at,
         )
 

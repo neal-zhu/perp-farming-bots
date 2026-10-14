@@ -406,7 +406,8 @@ class HedgeMonitor(StrategyMonitor):
         self.hints[1].set_text("下一次建仓仍需满足此条件")
         self.values[2].set_text(money(p.target_usd))
         self.hints[2].set_text(
-            f"参考数量 {preview.quantity} {p.symbol}" if preview else "实际数量按原生精度确定"
+            f"多 {preview.long_quantity} {p.long_symbol} · 空 {preview.short_quantity} {p.short_symbol}"
+            if preview else "两腿分别按金额和原生精度确定数量"
         )
         cycle = store.cycle(bot.id)
         positions = store.positions(bot.id)

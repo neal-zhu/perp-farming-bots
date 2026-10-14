@@ -44,7 +44,7 @@ class BotLeg:
 
     def update(self, connection: Connection, position: Position | None, data: dict[str, Any]):
         self.account.set_text(connection.name)
-        self.provider.set_text(PROVIDER_NAMES[connection.provider])
+        self.provider.set_text(f"{PROVIDER_NAMES[connection.provider]} · {data['symbol']}")
         self.quantity.set_text(f"{position.quantity} {position.symbol}" if position else "尚无确认仓位")
         self.quantity.classes(
             replace="pfb-leg-quantity" + (" pfb-leg-quantity--empty" if position is None else "")
@@ -156,7 +156,9 @@ class BotCard:
         pending = store.bot_pending(bot.id)
         cycle = store.cycle(bot.id)
         self.name.set_text(bot.name)
-        self.symbol.set_text(f"{bot.parameters.symbol} 永续 · 价差对冲 · 第 {cycle['number']} 轮")
+        self.symbol.set_text(
+            f"{bot.parameters.long_symbol} / {bot.parameters.short_symbol} · 价差对冲 · 第 {cycle['number']} 轮"
+        )
         volume = store.turnover(bot.id)
         self.turnover.set_text(
             "待确认" if volume["has_unconfirmed_orders"] else money(volume["confirmed_usd"])

@@ -44,6 +44,9 @@ class Adapter:
     async def snapshot(self) -> AccountSnapshot:
         raise NotImplementedError
 
+    async def available(self, symbol: str) -> Decimal:
+        return (await self.snapshot()).available
+
     async def validate(self) -> AccountSnapshot:
         raise NotImplementedError
 
@@ -570,6 +573,10 @@ class Accounts:
         self.snapshots[connection_id] = snapshot
         self.errors.pop(connection_id, None)
         return snapshot
+
+    async def available(self, connection_id: str, symbol: str) -> Decimal:
+        """Read collateral in the selected market's native margin domain."""
+        return await self.adapter(connection_id).available(symbol)
 
     def view(self, connection_id: str) -> dict[str, Any]:
         snapshot = self.snapshots.get(connection_id)
