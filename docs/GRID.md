@@ -41,6 +41,8 @@ From cursor `k`:
 
 Prices are bounded by configured slippage, native precision, the trigger line and the grid range. These are **IOC orders sent after a program-side trigger**, not resting exchange orders. The shared executor journals before sending and queries the original identity. Cursor progression requires the complete target inventory and applied native evidence. Partial or unknown results do not advance the cursor or automatically submit a replacement order.
 
+A terminal IOC cancellation with confirmed zero fills leaves an initialized grid's cursor, levels and inventory unchanged. Its order and operation records remain, and a later eligible tick checks fresh prices/account state and creates a new client order ID. The canceled request is never replayed. Arcus's explicit `REJECTED / IOC_CANCELED` response is treated as this cancellation; other rejections still pause for review. A zero-fill startup cancellation discards only the uncommitted layout and waits to initialize again. Synchronizing an interrupted order that proves canceled with zero fills pauses for explicit Run before any new execution.
+
 After a complete fill, the cursor moves to the executed line; the neighboring line in the opposite direction becomes the next potential reversal. Repeated price oscillations can continue increasing and reducing inventory. The grid range does not move with price. Outside the range, positions remain and new grid actions wait.
 
 ## Pause, close, edits and restart
@@ -55,4 +57,4 @@ Healthy service restart retains the initialized layout. Interrupted operations q
 
 The monitor displays current price, nearest buy/sell triggers and distances. Red/green rows are conditional sell/buy plans; the blue row is current midpoint. Nearby rows are shown by default, with an all-lines toggle. Uninitialized configurations do not display generated lines. Polling preserves rows, visibility and unsaved forms.
 
-Tests: [grid execution](../tests/test_grid.py), [startup](../tests/test_grid_startup.py), [preflight](../tests/test_grid_preflight.py), [reuse and edits](../tests/test_grid_reuse.py), [quote outages](../tests/test_grid_quotes.py), [strategy presentation](../tests/test_strategy_widgets.py). Reuse evidence and notices: [grid research](research/grid.md), [UPSTREAMS.md](../UPSTREAMS.md).
+Tests: [grid execution](../tests/test_grid.py), [unfilled IOC recovery](../tests/test_grid_unfilled.py), [startup](../tests/test_grid_startup.py), [preflight](../tests/test_grid_preflight.py), [reuse and edits](../tests/test_grid_reuse.py), [quote outages](../tests/test_grid_quotes.py), [strategy presentation](../tests/test_strategy_widgets.py). Reuse evidence and notices: [grid research](research/grid.md), [UPSTREAMS.md](../UPSTREAMS.md).

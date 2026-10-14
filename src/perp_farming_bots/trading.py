@@ -249,6 +249,14 @@ class Arcus(Adapter):
         ):
             raise ValueError("Arcus 订单身份与本地提交不符")
         status = r["status"].lower()
+        # Arcus reports an unmatched IOC as REJECTED/IOC_CANCELED.
+        # Normalize this explicit cancellation; other rejections stay rejected.
+        if (
+            status == "rejected"
+            and r.get("rejectionReason") == "IOC_CANCELED"
+            and r.get("timeInForce") == "IOC"
+        ):
+            status = "canceled"
         if status not in {"filled", "canceled", "rejected"}:
             return self.unknown(r["orderId"])
         # originalSize - remainingSize is documented native cumulative filled size.
@@ -556,8 +564,13 @@ class Accounts:
 
     def adapter(self, connection_id: str) -> Adapter:
         if connection_id not in self.adapters:
-            value = ConnectionCreate.model_validate_json(self.secrets.decrypt(self.store.credentials(connection_id)))
-            if value.provider == Provider.ONDO and value.account_id != self.store.connection(connection_id).account_ref:
+            value = ConnectionCreate.model_validate_json(
+                self.secrets.decrypt(self.store.credentials(connection_id))
+            )
+            if (
+                value.provider == Provider.ONDO
+                and value.account_id != self.store.connection(connection_id).account_ref
+            ):
                 raise ValueError("Ondo 加密凭据与原生账户身份不匹配")
             self.adapters[connection_id] = self.adapter_for(value)
         return self.adapters[connection_id]

@@ -345,10 +345,9 @@ class Store:
         for other in self.bots():
             if other.id == bot_id or other.state == BotState.CLOSED:
                 continue
-            if (
-                (isinstance(parameters, GridParameters) or other.strategy == "grid")
-                and set(parameters.market_bindings) & set(other.parameters.market_bindings)
-            ):
+            if (isinstance(parameters, GridParameters) or other.strategy == "grid") and set(
+                parameters.market_bindings
+            ) & set(other.parameters.market_bindings):
                 raise ValueError(
                     f"网格需要独占账户的该币种，已被 Bot「{other.name}」使用；请选择其他账户或币种"
                 )
@@ -698,6 +697,77 @@ class Store:
                 raise ValueError("原网格尚未确认，不能自动重试")
             self.finish_operation(op_id, "skipped", f"未创建订单，跳过本次操作：{reason}", db)
 
+    def skip_unfilled_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> bool:
+        """Retain the terminal zero-fill journal and original cursor, never replay it."""
+        from .grid import target_quantity
+
+        with self.transaction() as db:
+            op = db.execute(select(operations).where(operations.c.id == op_id)).mappings().one()
+            submitted = list(db.execute(select(orders).where(orders.c.operation_id == op_id)).mappings())
+            if len(submitted) != 1:
+                return False
+            order = submitted[0]
+            if not order["applied"] or order["status"] != "canceled":
+                return False
+            result = OrderResult.model_validate_json(order["result"])
+            if result.status != "canceled" or result.quantity != 0:
+                return False
+            action = (
+                db.execute(select(grid_actions).where(grid_actions.c.operation_id == op_id)).mappings().one()
+            )
+            if (
+                op["bot_id"] != bot_id
+                or order["bot_id"] != bot_id
+                or action["bot_id"] != bot_id
+                or op["kind"] not in {"grid_initial", "grid_step"}
+                or op["status"] not in {"pending", "unknown", "attention"}
+            ):
+                raise ValueError("零成交订单的网格操作归属或状态不符")
+            state = db.execute(select(grid_states).where(grid_states.c.bot_id == bot_id)).mappings().one()
+            p = self.bot(bot_id).parameters
+            assert isinstance(p, GridParameters)
+            owned = list(db.execute(select(positions).where(positions.c.bot_id == bot_id)).mappings())
+            current = sum(
+                (Decimal(row["quantity"]) * (1 if row["role"] == "long" else -1) for row in owned), Decimal(0)
+            )
+            initial = op["kind"] == "grid_initial"
+            expected = (
+                Decimal(0)
+                if initial
+                else target_quantity(
+                    p, state["cursor"], Decimal(state["quantity_per_grid"]), state["zero_inventory_cursor"]
+                )
+            )
+            delta = Decimal(action["target_quantity"]) - expected
+            intent = OrderIntent.model_validate_json(order["intent"])
+            if (
+                bool(state["initialized"]) == initial
+                or initial
+                and bool(owned)
+                or len(owned) > 1
+                or current != expected
+                or intent.connection_id != p.connection_id
+                or intent.symbol != p.symbol
+                or intent.reduce_only
+                != (bool(expected) and abs(Decimal(action["target_quantity"])) < abs(expected))
+                or intent.quantity != abs(delta)
+                or intent.side != ("buy" if delta > 0 else "sell")
+                or any(row["connection_id"] != p.connection_id or row["symbol"] != p.symbol for row in owned)
+            ):
+                raise ValueError("零成交订单与原网格仓位不符，已停止新动作")
+            if initial:
+                # No startup position exists. Only discard the uncommitted layout;
+                # the native order, operation and action evidence remain intact.
+                db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
+            self.finish_operation(op_id, "skipped", "原 IOC 订单已取消，确认零成交；保留原订单记录", db)
+            self.set_state(
+                bot_id,
+                BotState.PAUSED if recovered else BotState.WAITING if initial else BotState.HOLDING,
+                "原订单已确认未成交，点击运行继续" if recovered else "本次未成交，继续等待价格触发",
+                db,
+            )
+            return True
+
     def complete_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> None:
         with self.transaction() as db:
             kind = db.execute(select(operations.c.kind).where(operations.c.id == op_id)).scalar_one()
@@ -718,7 +788,10 @@ class Store:
                     for order in db.execute(select(orders).where(orders.c.operation_id == op_id)).mappings()
                 )
             ):
-                raise ValueError("网格实际成交未达到本格目标；保留实际仓位，停止后续动作，请平仓处理")
+                raise ValueError(
+                    f"本格目标仓位 {action['target_quantity']}，实际仓位 {quantity}；"
+                    "已暂停，请核实原订单和实际仓位"
+                )
             db.execute(
                 update(grid_states)
                 .where(grid_states.c.bot_id == bot_id)

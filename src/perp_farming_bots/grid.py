@@ -87,9 +87,9 @@ class Grid:
         available_units = anchor if p.direction == "long" else p.grid_count - anchor
         if p.direction == "neutral":
             available_units = max_units
-        minimum_quantity = (
-            spec.size_lower_bound(levels[0]) / spec.quantity_step
-        ).to_integral_value(rounding=ROUND_CEILING) * spec.quantity_step
+        minimum_quantity = (spec.size_lower_bound(levels[0]) / spec.quantity_step).to_integral_value(
+            rounding=ROUND_CEILING
+        ) * spec.quantity_step
         leverage = p.capital.leverage
         minimum_budget = minimum_quantity * levels[-1] * max_units / leverage
         minimum_budget_cents = minimum_budget.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
@@ -279,8 +279,16 @@ class Grid:
                         trigger_price=trigger,
                         grid_bounds=(levels[0], levels[-1]),
                     )
+                    if r.store.skip_unfilled_grid_action(bot.id, op_id):
+                        r.read_recovered(bot.id)
+                        return False
                     if result.quantity != abs(delta):
-                        raise ValueError("本格订单未完全成交；保留实际仓位，停止后续动作，请平仓处理")
+                        if result.status == "rejected" and result.quantity == 0:
+                            raise ValueError("本格订单被交易所拒绝，未成交；已暂停，请核实原订单和账户设置")
+                        raise ValueError(
+                            f"本格仅成交 {result.quantity}/{abs(delta)} {p.symbol}；"
+                            "已暂停并保留实际仓位，请核实成交后处理"
+                        )
                 r.store.complete_grid_action(bot.id, op_id)
                 r.read_recovered(bot.id)
                 return True
@@ -324,6 +332,8 @@ class Grid:
             "attention",
         }:
             try:
+                if r.store.skip_unfilled_grid_action(bot_id, latest["id"], recovered=True):
+                    return
                 r.store.complete_grid_action(bot_id, latest["id"], recovered=True)
             except ValueError as exc:
                 r.store.finish_operation(latest["id"], "attention", str(exc))

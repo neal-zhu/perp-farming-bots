@@ -166,7 +166,7 @@ async def test_initial_entry_waits_for_range_without_any_order(env, monkeypatch)
     assert store.bot(bot.id).state == BotState.CLOSED
 
 
-@pytest.mark.parametrize("unknown,fraction", [(False, "0.5"), (False, "0"), (True, "1")])
+@pytest.mark.parametrize("unknown,fraction", [(False, "0.5"), (True, "1")])
 async def test_unconfirmed_or_partial_grid_never_repeats_submission(env, monkeypatch, unknown, fraction):
     store, runtime, account, _ = env
     _, adapter = await grid_market(runtime, account, monkeypatch)
