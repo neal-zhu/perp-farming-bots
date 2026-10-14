@@ -1,73 +1,58 @@
-# 永续网格使用规则
+# Fixed price-triggered grid
 
-第一版为单账户、价格触发的等差永续网格，支持 Arcus、Lighter Core、Lighter Robinhood 的 BTC / ETH / SOL。后台约每 3 秒检查；到达相邻格线后通过现有真实签名路径提交限价 IOC。程序需要在线，订单不会提前挂在交易所。
+Strategy ID: `grid`. Planner: [grid.py](../src/perp_farming_bots/grid.py). Parameters: `GridParameters` in [models.py](../src/perp_farming_bots/models.py). Form: [grid_ui.py](../src/perp_farming_bots/grid_ui.py).
 
-## 参数与预算
+## Geometry and sizing
 
-选择账户实例、方向、价格下限/上限、2–100 格、投入保证金额度、杠杆、全仓/逐仓模式和滑点。中性模式需要偶数格。区间内名义仓位上限 = 保证金额度 × 杠杆；例如 $20、5 倍对应 $100。表单自动展示计算结果，并读取交易所当前实际杠杆、保证金模式和市场杠杆上限。保存配置不下单，也不修改原生设置。
+A fixed arithmetic range has `N = grid_count` intervals and `N + 1` ascending levels. Levels use the attributed [Hummingbot geometry adaptation](../src/perp_farming_bots/hummingbot_grid.py), then native price precision. Collapsed or invalid levels are rejected.
 
-“投入保证金额度”是计算这个 Bot 数量的资金预算，不是在保存时划走或锁定全部金额。全仓共享账户抵押资产，额度不隔离；逐仓按原生实际建仓分配保证金，未用额度留在账户。程序不自动追加保证金。价格超出网格区间时仍保留仓位，其当前名义价值可能超过按区间上限计算的额度。
+Let `B = investment_usd × leverage`. This is the planned maximum notional within the configured range, not a turnover limit or an immediate transfer of margin. Each grid quantity is floored to the native size step:
 
-点击运行时，新网格通过检查后应用所选杠杆和模式，再查询原生设置；读回一致才启用策略。签名请求先加密存入操作日志，再发送一次。回执不明确时停止启用，仅查询原设置；同步确认后保持暂停，用户再次点击运行。运行中若原生杠杆或模式被外部修改，停止新策略动作；手动 reduce-only 平仓仍可用。不会擅自恢复或覆盖有持仓时的设置。
+```text
+q = floor_to_step(B / (highest_level × sizing_units))
+```
 
-填写后直接点击“保存 Bot”，无需单独预览或检查。保存新网格、修改未启动网格的参数时，自动查询原生市场规则和账户余额，核对每格最小数量/金额、预算、外部仓位与委托，以及账户/币种占用。检查期间按钮显示“检查并保存…”，防止重复提交。失败不保存，在保存按钮上方显示具体的最低预算或余额差额，保留已填参数。运行时仍重新检查。已建立网格仅修改名称或滑点，不重新要求空闲余额覆盖已分配的整份预算。
+Long and short use `sizing_units = N`. Neutral uses the larger distance from the starting zero-inventory origin to either boundary. Save checks each order's minimum quantity/notional, account collateral, leverage/mode rules and account/symbol reservation. There is one capital model: `investment_usd`, integer `leverage`, and `margin_mode` (`cross` or `isolated`).
 
-最低每格数量 = max(数量精度、交易所最小数量、最小金额 / 实际下限)，按数量精度向上取整；最低保证金额度 = 最低每格数量 × 实际上限 × 最大份数 / 杠杆。最低金额提示向上取到美分，避免显示金额仍低于实际门槛。余额须覆盖完整保证金额度；余额或所需市场保证金规则读取失败会阻止保存，不会当作零或沿用旧值。
+Run can apply native leverage/mode only to a flat account/symbol. The prepared setting is journaled, sent once and read back before activation. Unconfirmed settings block trading; subsequent synchronization only reads the original target. Investment remains a sizing budget; isolated margin follows actual native allocations and cross mode shares account collateral. No automatic margin top-up is performed.
 
-杠杆不得超过原生市场上限。Lighter 使用 1/10,000 的保证金比例精度，只接受能精确表示的整数倍数（如 1、2、4、5、8、10、20、25），不把输入的 3 倍悄悄变成另一个值。账户没有返回当前设置时显示未确认，运行需要设置后的真实读回。
+## Startup and target inventory
 
-切换币种会清空旧区间，必须重新填写或点击“填入当前价 ±10%”。更改参数会清除上次错误提示；旧行情请求迟到时不能覆盖新币种或手动修改的区间。保存不会建立仓位，运行后若价格在区间外则等待进入。
+The first eligible in-range price chooses the nearest level as the initial cursor `k`. The durable layout stores levels, `q`, cursor and the zero-inventory origin `a`.
 
-生成 N+1 条固定格线，按交易所价格精度取整。每份数量按价格上限和资金预算计算后向下取整。做多/做空按 N 份计算每格数量；中性按启动位置到两侧边界的较大格数计算，保证两侧都不会超过持仓额度。所有格线的订单均须满足交易所最低数量和金额。
+| Direction | Origin when startup position enabled | Origin when startup position disabled | Signed target inventory |
+| --- | --- | --- | --- |
+| Long | `N` | Initial cursor | `max(0, a - k) × q` |
+| Short | `0` | Initial cursor | `min(0, a - k) × q` |
+| Neutral | Not allowed | Initial cursor | `(a - k) × q` |
 
-保证金额度 × 杠杆是整个 Bot 的区间内持仓上限，累计成交额包含重复买卖，可以超过此上限。关闭启动建仓时，做多只使用启动格位下方的买入格线，做空只使用上方的开空格线，资金预算可能不会全部用于持仓。每格是固定币数量，价格变化时对应的金额会变化。
+`open_position_on_start` is required in the API configuration. New forms set it to false. Long/short startup positions can aggregate multiple shares in one initial order. Disabled startup initializes a flat layout and waits for a price trigger. Neutral always starts flat.
 
-## 初始仓位和买卖
+An unseeded directional grid may use only part of the nominal budget because its initial origin limits how many levels can create directional inventory. A boundary with no usable entry direction waits rather than freezing an unusable layout. Long never creates a short target; short never creates a long target.
 
-保存后 Bot 为“待运行”，不会自动生成格线或启动交易；面板提示点击“运行”。
+## Trigger and progression
 
-做多、做空提供“启动时建仓”开关，新建默认关闭。关闭时先初始化格线、保持空仓，随后每跨一格只增减一份；开启时按当前格位一次建立底仓，初始订单可能包含多份。中性网格始终从空仓开始。
+From cursor `k`:
 
-首次进入可交易区间时，选择最近的格线作为起始格位。空仓格位 a 与每格数量 q 一起持久化，后续当前格位记为 k：
+- Buy when executable asks reach level `k - 1`.
+- Sell when executable bids reach level `k + 1`.
+- Compute the adjacent target and trade only the signed inventory delta.
+- Reductions use reduce-only. A direction change first passes through confirmed zero inventory.
 
-| 方向 | 空仓格位 a | 目标净仓位 | 下跌一格 | 上涨一格 |
-| --- | --- | --- | --- | --- |
-| 做多，开启启动建仓 | N | (N−k)q | 买入一份 | 卖出减仓一份 |
-| 做空，开启启动建仓 | 0 | −kq | 买回减仓一份 | 卖出开空一份 |
-| 做多，关闭启动建仓 | 起始格位 | max(0, a−k)q | 买入一份 | 有多仓时卖出一份 |
-| 做空，关闭启动建仓 | 起始格位 | min(0, a−k)q | 有空仓时买回一份 | 卖出开空一份 |
-| 中性 | 起始格位 | (a−k)q | 加多仓或减空仓 | 减多仓或加空仓 |
+Prices are bounded by configured slippage, native precision, the trigger line and the grid range. These are **IOC orders sent after a program-side trigger**, not resting exchange orders. The shared executor journals before sending and queries the original identity. Cursor progression requires the complete target inventory and applied native evidence. Partial or unknown results do not advance the cursor or automatically submit a replacement order.
 
-做多空仓时上涨不会开空，做空空仓时下跌不会开多；没有持仓变化的格线不提交订单，也不移动策略位置。启动价附近没有可开仓格线时等待价格进入可交易位置，不锁定无交易能力的布局。
+After a complete fill, the cursor moves to the executed line; the neighboring line in the opposite direction becomes the next potential reversal. Repeated price oscillations can continue increasing and reducing inventory. The grid range does not move with price. Outside the range, positions remain and new grid actions wait.
 
-例如 58,000–62,000、4 格，从 60,000 启动：不开底仓的做多先保持空仓，59,000 买一份、回到 60,000 卖出一份；空仓时涨到 61,000 不开空。中性在 61,000 可以开空，回到 60,000 买回平空。开启底仓的做多则先买两份，之后每格只增减一份。
+## Pause, close, edits and restart
 
-恢复使用原来的格线、数量、空仓格位和游标。只有确认平仓后重新运行，或空仓修改参数后运行，才以当时价格重新初始化。切换启动方式不处理既有仓位，需先自行平仓。
+The grid exclusively reserves its native account/symbol. External positions or orders and incompatible bot allocations block execution. Pause keeps layout and inventory. Run after Pause checks the original target and continues that layout. Close handles only owned quantity; after confirmed closure an explicit Run starts a new layout and retains historical turnover.
 
-用可成交买价/卖价判断格线，不使用中价穿越来冒充成交。下单前再次检查行情和区间，网格买入限价不高于触发格线、卖出限价不低于触发格线。跳过多格时每次检查最多处理一格；实际成交数量、价格与手续费决定账目，不补造离线期间的成交。
+Flat paused/closed grids without unresolved operations can change direction, bounds, grid count, startup choice and capital. Historical orders lock account/symbol bindings. Save revalidates and clears only the current layout, with no trade; name/slippage-only edits preserve it.
 
-## 暂停、平仓和恢复
+Healthy service restart retains the initialized layout. Interrupted operations query original identities; recovered complete evidence pauses for explicit user resumption. An unsent operation can be skipped only if it has no order journal. Temporary native read failures retry; five minutes of continuous unavailability pauses the bot. Unknown writes remain in original-order recovery.
 
-- 超出区间时保留当前仓位、不提交新策略订单；回到区间后继续检查。没有止损、追踪止损或强制减仓。
-- 暂停保留仓位和游标；运行恢复原格线。平仓仅 reduce-only 关闭此 Bot 的已分配数量并结束本次运行。
-- 平仓确认后可以点击“重新运行”：重新检查账户余额、原生规则、外部仓位/委托及账户币种占用，再清除当前网格游标、按当前价格重新初始化。使用同一 Bot、原参数，历史订单、成交和累计金额保留。检查失败保留已平仓状态和上次格线，未确认订单或剩余分配仓位不能重新初始化。再次运行只在用户点击后启用，不会自动重新开仓。
-- 部分成交、结果未知、账户外部仓位/委托变化都停止新动作并显示告警。查询原订单，不重新发送或自动补足未成交数量。
-- 行情过期或临时获取失败时，跳过本次交易，保留运行状态、仓位和原格线；下一次后台检查重新取价，有效后继续原策略。预检查先核对资金与账户，再读取盘口，避免资金检查耗时使提前取得的行情过期。下单前仍核对最新盘口，15 秒时效及非未来时间戳规则不放宽。日志记录行情时间、校验时间和数据年龄，区分真正过期与时间戳异常。
-- 下单前行情失效且已经创建策略操作时，只有该操作完全没有订单日志，才记录为已跳过；未发送的初始化清除临时格线，下次重新计算，已初始化网格保留原游标。只要已有订单日志就不能走自动重试分支，仍按原订单核实和保留实际成交。临时读取失败在面板显示重试状态，不发送重复待处理告警；持续五分钟读取失败才暂停并告警。
-- “需要处理”的 Bot 可手动恢复运行。没有未确认订单、实际仓位与原网格目标一致时，可以直接点击“运行”；重新检查原生账户、委托、杠杆及有效行情后恢复，无需先“暂停”。已暂停 Bot 始终保持暂停，行情恢复不会替用户启动。
-- 完整的迟到成交可推进原游标，但同步后保持暂停，用户点击运行才继续。未达到目标的部分成交保留实际数量，用户可平仓处理；平仓部分成交可再次关闭剩余数量。
-- 健康网格重启保留已保存的格线、每格数量和游标；未完成的操作先查询原身份，不能重复初始化。
+## Presentation and verification
 
-网格独占账户实例的这个币种。不可与另一网格、对冲 Bot 或手动持仓共用，其他币种不受影响。暂停或已平仓、无分配仓位且无未确认操作时，可以修改方向、区间、格数和资金配置。已有订单记录的账户和币种固定；没有实际订单记录时也可修改这两个字段，保存前核对原账户及新账户的实际仓位与委托。运行中先暂停，暂停后仍有仓位则先平仓。名称与已确认状态下的滑点仍可修改。
+The monitor displays current price, nearest buy/sell triggers and distances. Red/green rows are conditional sell/buy plans; the blue row is current midpoint. Nearby rows are shown by default, with an all-lines toggle. Uninitialized configurations do not display generated lines. Polling preserves rows, visibility and unsaved forms.
 
-Bot 卡片展示自己的净仓位、均价、交易盈亏、已确认手续费、资金费率预估和全部实际累计成交额。累计金额包含初始仓位、逐格成交及手动平仓。未知手续费保留待确认；实际资金费仍未计入完整盈亏。积分继续按账户采集，不分摊到 Bot。
-
-“网格计划”以订单墙样式按价格从高到低展示已经初始化的实际格线：红色为卖出、绿色为买入，标明每次数量及开仓/加仓/减仓/平仓。蓝色当前价格线按盘口中价定位；下一格突出显示，其余标为后续。默认展示相邻格线，可切换查看全部格线。这里是程序内等待触发的策略计划，不是交易所挂单，也不是历史成交。已平仓时显示上次格线，并说明重新运行会重新初始化。买入距离按可成交卖价、卖出距离按可成交买价计算。
-
-运行面板展示为什么正在等待、下一格触发价格及距离、已确认仓位和成交笔数。网格处在启动空仓格位时会说明等待原因。暂停、已平仓、区间外、行情过期及原订单待确认都有独立提示；行情不可用不沿用旧价格计算距离。未初始化的配置不冒充已经生成原生格线。页面定时更新已有元素，保留格线查看设置和未保存表单。
-
-“需要处理”且没有未确认订单的面板显示“上次停止原因”、记录更新时间及当前行情是否可用，不再一概标成“订单或仓位待确认”。历史故障与当前行情分开展示。
-
-成熟实现的参考与实际代码复用范围见 [网格实现依据](research/grid.md)。本版复用等差计算和现有原生执行，未引入整套 Hummingbot 引擎。隔离测试通过不等于已完成有资金的实盘验收。
-
-修改区间、格数、方向或资金配置时，保存前重新执行原生最小订单、资金和账户占用检查；失败保留原参数和格线。成功仅清除当前网格布局，历史订单、成交、操作日志和累计金额保留；已暂停网格回到待运行，已平仓网格保持已平仓。下次用户点击运行才应用新参数及需要的原生杠杆设置。只修改名称或滑点不重置网格。
+Tests: [grid execution](../tests/test_grid.py), [startup](../tests/test_grid_startup.py), [preflight](../tests/test_grid_preflight.py), [reuse and edits](../tests/test_grid_reuse.py), [quote outages](../tests/test_grid_quotes.py), [strategy presentation](../tests/test_strategy_widgets.py). Reuse evidence and notices: [grid research](research/grid.md), [UPSTREAMS.md](../UPSTREAMS.md).

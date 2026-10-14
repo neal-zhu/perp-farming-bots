@@ -16,7 +16,7 @@ def private_file(path: Path, value: bytes) -> bytes:
 
 
 class Secrets:
-    """Local encryption for saved notification tokens; application authentication is pending."""
+    """Local encryption for credentials, prepared requests and notification tokens."""
 
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)

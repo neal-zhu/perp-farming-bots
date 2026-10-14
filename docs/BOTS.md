@@ -1,55 +1,48 @@
-# Bot 与账户实例
+# Bot and account model
 
-一个 Bot 是独立的策略实例，由策略类型/版本、参数、具体账户绑定、运行状态、自己的订单/成交/持仓归属，以及盈亏和告警构成。
+A bot is an independent strategy instance: its ID, typed parameters, account bindings, lifecycle, allocated inventory, execution operations, orders, fills, trading PnL and alerts. Points belong to an account scope, not automatically to a bot.
 
-一个程序实例可以运行多个 Bot。它们复用市场连接和数据库，但不能互相使用对方的已分配持仓数量。
+## Identity and ownership
 
-账户实例与交易所名字不同。例如：
+An account instance is a native trading account rather than an exchange label. Its provider and native identity are verified before storage. Multiple accounts on one venue are allowed; multiple keys for one native account do not create independent accounts. Native identity rules are in [exchange scope](exchanges.md).
 
-```text
-Arcus
-  账户 A（原生账户地址/子账户 A）
-  账户 B（原生账户地址/子账户 B）
+A spread bot binds two different account instances. A grid binds one account. A grid reserves that account/symbol exclusively; it cannot share inventory with another bot or a manual position. Compatible same-direction spread bots can share a native account/symbol, with allocations tracked separately.
 
-Bot 1：Arcus A 做多 BTC，Arcus B 做空 BTC
-Bot 2：Arcus A 做多 ETH，Lighter RH C 做空 ETH
-```
+The exchange may net positions across a symbol. Bot inventory is derived from confirmed fills and must reconcile with that native net inventory. Close uses only the selected bot's allocation with reduce-only, never an account-wide close-all.
 
-两条腿可以来自同一交易所，但必须来自不同账户实例。真实账户接入时，同一个原生账户换 API key 不能被当成第二个独立账户。当前使用 Arcus 钱包地址 + 子账户编号，或 Lighter 部署 + Account Index，作为原生账户身份；重复绑定同一原生账户会被拒绝。
-
-当前 Bot 的主要字段：
-
-| 字段 | 含义 |
+| Model | Meaning |
 | --- | --- |
-| id | 独立 Bot 身份 |
-| request_id | 创建幂等身份；重复请求不新建另一个 Bot |
-| strategy | spread_hedging 或 grid；剥头皮未开放 |
-| parameters | 按策略区分：对冲账户/价差/重开参数，或网格单账户/方向/区间/格数/预算；均有滑点 |
-| state / reason | 待运行、等待、持仓、暂停、已平仓、需要处理及原因 |
-| positions / fills / orders / operations | 归属于这个 Bot 的持仓分配、成交和操作记录 |
-| cycle | 当前轮次、该轮建仓操作 ID、建仓确认时间、重开时间与随机等待截止时间 |
-| turnover | 全部轮次的已确认成交额和未确认订单标记 |
+| `Connection` | Verified native identity; private credentials are stored separately and encrypted |
+| `Bot` | Configuration, strategy ID, state and reason; `request_id` makes creation idempotent |
+| `Position` | Confirmed quantity, side and entry price allocated to one bot |
+| `OrderIntent` | Account/symbol, side, quantity, limit price, reduce-only and stable client ID |
+| `OrderResult` | Explicit terminal or unknown result, quantity, average price, fee and native ID |
+| Operation | A bot-authorized open, close, reopen or grid action, with status and recovery evidence |
+| Cycle | Spread round, original entry operation, reopen time and persisted random wait |
+| Grid state/action | Persisted levels, quantity per grid, cursor, zero-inventory origin and pending target |
+| Margin change | Encrypted prepared native settings and confirmation evidence |
 
-交易操作只有运行、暂停、平仓。运行用于开始等待或恢复暂停的策略，暂停保留持仓，平仓只处理所选 Bot 的分配数量。积分通常属于平台账户，不能自动归为单个 Bot 的积分。
+Definitions: [models.py](../src/perp_farming_bots/models.py). Tables and transactional rules: [store.py](../src/perp_farming_bots/store.py).
 
-平仓确认后保留 Bot 配置，按钮变为“重新运行”。只有用户再次点击才重新检查原生行情、账户持仓/委托和策略占用；网格按当前价格重新初始化，对冲清除上轮活动身份并按原价差条件开始下一轮。历史订单、成交与累计金额保留。检查失败保留已平仓状态；有剩余分配仓位或未确认订单不能重新运行。暂停后的运行继续原仓位和策略位置。
+## Lifecycle
 
-“修改参数”复用创建表单并回填已有值。没有下单记录或持仓的 Bot 可修改账户、币种、金额、价差和滑点；等待或暂停中的 Bot 修改参数后回到待运行，保存本身不会发起交易。已有下单记录后，建仓参数保持原来的含义，名称可以修改，订单已确认且状态无需处理时可以修改用于平仓的滑点。服务端重新检查当前状态，不依赖页面上的按钮限制。
+| Internal state | Meaning |
+| --- | --- |
+| `ready` | Configuration saved; waiting for an explicit Run |
+| `waiting` | Enabled and waiting for entry conditions or grid initialization |
+| `holding` | Confirmed strategy state; may retain inventory or monitor an initialized flat grid |
+| `paused` | New strategy actions disabled; allocated inventory retained |
+| `closed` | Allocated inventory closed; an explicit Run may begin another cycle/layout |
+| `attention` | Execution/inventory evidence requires reconciliation or operator review |
 
-“删除”需要二次确认，仅删除无持仓、无未确认订单/操作的待运行、已暂停或已平仓配置。数据库保留原 Bot ID 的成交、订单及操作记录。删除不会向交易所提交订单。
+Run, Pause and Close are the user trading controls. Internal `sync` queries original evidence. Synchronization of an interrupted successful operation does not silently re-enable a paused strategy. No separate stop state is exposed.
 
-资金费率是每条腿对应合约的市场信息，分别显示下次预估、上次结算、小时周期及数据更新时间。等额双腿预估净收取费率 = 做空费率 − 做多费率，正数表示收取。该值没有假设未来费率不变，也没有归算已到账资金费，不能当作实际 Bot 盈亏。
+Saving a configuration sends no order. Changing trading parameters can require another Run. Historical orders lock account/symbol meanings; flat paused/closed grids may change their geometry and capital only when no unresolved operation remains. The server enforces editability independently of button state.
 
-网格 Bot 使用一个账户和独立的 GridParameters，支持做多、做空、中性；共享执行不需要虚构第二条腿。规则及预算定义见 [GRID.md](GRID.md)。剥头皮仍需明确规则后实现。
+Deleting an eligible bot removes its configuration and grid layout but retains order, fill and operation history. Owned inventory or unresolved operations block deletion. [store.py](../src/perp_farming_bots/store.py) is authoritative for field-level editability.
 
-运行中的按钮置灰；暂停后“运行”重新可用。默认执行一次建仓。开启定期重开后，双腿确认建仓时开始持仓计时，到期复用 reduce-only 平仓流程。全部确认平仓后，以同一事务完成原操作、推进轮次并保存随机等待截止时间；之后仍检查原价差条件。每轮只有一个建仓操作身份，旧轮成交历史不会触发重复建仓，也不会阻止下一轮。
+## Displayed accounting
 
-随机等待上限为 0–300 秒，实际等待从该范围均匀抽取整数秒；重启沿用原截止时间。暂停取消持仓计时，持仓恢复运行后重新计时。手动平仓结束循环，包括无仓位的随机等待阶段。重开平仓遇到部分成交、未知结果或外部持仓变化时停止自动动作；迟到的平仓证据只结束原操作，不自行启动下一轮。同步正常、已完成的日志不改变轮次或计时。
+Trading PnL uses confirmed inventory and fills, deducts known fees and excludes actual funding payments. Unknown fees can make net PnL unknown. Turnover sums each confirmed fill's quantity × average price across all bot cycles; fee enrichment or repeated synchronization does not count the fill again.
 
-累计成交额依据已确认成交记录，包含双腿建仓和平仓的实际数量 × 成交均价。费用补全与重复同步不会重复累计，前一轮的迟到手续费不会覆盖当前轮持仓的开仓费。未确认订单存在时总额显示待确认，保留明确标注的已确认部分。
-
-账户积分按原生账户范围保存采样及失败，展示 24 小时、7 天、30 天曲线。未观察区间不连线、不补造积分。
-
-网格保存独立的格线、每格数量、当前格位、启动空仓格位与待确认策略操作。累计成交额与盈亏复用实际成交记录，部分成交不推进格位。暂停或已平仓、没有仓位和未确认操作时可修改方向、区间、格数、保证金额度、杠杆和模式；已有订单记录时账户与币种固定。保存参数清除当前布局，点击运行后重新初始化。
-
-数据库格式版本为 8，仅支持当前参数结构。原生保证金设置写入须先记账、只提交一次、读回一致后启用；未知结果同步只查询，确认后暂停等待用户运行。
+Funding is a market forecast with a source and timestamp, not an attributed payment. Account points retain their native scope and missing samples. Details: [hedging](hedging.md), [grid](GRID.md), [points protocol](research/points.md).

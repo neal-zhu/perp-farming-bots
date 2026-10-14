@@ -1,128 +1,65 @@
 # Perp Farming Bots
 
-独立、自托管的永续交易策略程序，面向不需要编程的用户。通过浏览器连接交易所账户、创建多个 Bot、查看持仓、成交、盈亏和通知。
+[简体中文](README.zh-CN.md) · [User guide](docs/guide.zh-CN.md) · [Documentation](docs/README.md)
 
-支持跨账户价差对冲和多、空、中性永续网格，使用交易所真实行情与订单。
+A self-hosted dashboard for perpetual trading bots. Connect your own exchange accounts, configure a built-in strategy, and track each bot's positions, fills, trading PnL and turnover. The web interface is currently in Simplified Chinese.
 
-## 启动
+The application supports **cross-account spread hedging** and **long, short and neutral grids**. Multiple bots and multiple accounts on the same exchange are supported. Account points are sampled separately from bot trading results.
 
-需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)，或 Docker Compose。
+## Quick start
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git. Python 3.12 is selected by the repository configuration.
 
 ```bash
+git clone https://github.com/neal-zhu/perp-farming-bots.git
+cd perp-farming-bots
 uv sync --frozen
 uv run perp-farming-bots
 ```
 
-打开 `http://127.0.0.1:8080`。端口可通过 `PFB_PORT` 配置。
+Open **http://127.0.0.1:8080**. Connect an account, create a bot and click **运行** (Run). Saving a configuration does not start trading.
+
+Docker Compose is an alternative:
 
 ```bash
 docker compose up --build -d
 ```
 
-程序仅支持本机访问，尚未提供登录认证。默认监听本机，Compose 也仅向本机开放端口。运行数据保存在 `data/`，不进入 Git。
+The default setup is local only. **The UI and API have no authentication**; keep the localhost binding. Details, configuration, backups and server access: [Operations](docs/operations.md).
 
-## 连接账户
+## Available integrations
 
-1. 在“账户实例”点击“连接账户”，选择交易所并填写昵称。
-2. **Arcus**：到 [API Keys](https://app.arcus.xyz/api-keys) 生成并授权密钥。填写钱包地址、Subaccount # 和 API Signing Key。
-3. **Lighter Core / Robinhood**：在 [Core API Keys](https://app.lighter.xyz/apikeys) 或 [Robinhood API Keys](https://robinhoodchain.lighter.xyz/apikeys) 创建 API key。填写 Account Index、API key 编号和 API 私钥。Core 新建 key 使用 4–254；RH 使用 4–156 或 158–254。Core 与 Robinhood 的账户和密钥分别绑定。
-4. **Entropy**：先在 [Entropy](https://entropy.io) 连接交易账户钱包并完成交易授权，再在 [Hyperliquid API](https://app.hyperliquid.xyz/API) 创建有名称的交易代理。填写主交易账户地址与 API 代理私钥；目前支持 BTC、ETH、SOL，标准账户及 DEX 抽象模式。统一账户、组合保证金、子账户和自有 HIP-3 合约尚未支持。
-5. 点击“验证并连接账户”。通过场馆校验后，页面显示实际余额和持仓。
-
-填写的是交易所 API 签名密钥；程序不要求主钱包助记词或主钱包私钥。API 私钥加密保存在本机，不返回到列表接口。
-
-同一交易所可以连接多个不同原生账户，例如两个 Arcus 子账户互相对冲。给同一原生账户换 API key 不会形成第二个账户。
-
-## 创建和运行 Bot
-
-1. 点击“创建 Bot”，选择“跨账户价差对冲”，再选择做多账户、做空账户和币种。
-2. 设置单侧目标金额、价差阈值和最大滑点，查看两边实际盘口。
-3. 保存后点击“运行”。Bot 在价差达到条件时，提交有价格上限的 IOC 订单。
-4. 先确认第一腿实际成交，再按已成交数量提交第二腿。部分成交只记录实际数量；不会自动重复补仓、止损或补保证金。
-5. “暂停”保留持仓，点击“运行”可继续；“平仓”仅提交这个 Bot 的分配数量，使用 reduce-only。
-
-创建或修改 Bot 时可开启“定期重开”：双腿确认建仓 → 持仓间隔到期 → 确认平仓 → 随机等待 → 按原价差条件建仓。随机等待上限为 0–5 分钟，默认 5 分钟；设为 0 可取消随机等待。轮次和抽到的等待截止时间保存到数据库，重启不重新抽签。暂停取消持仓计时，恢复后重新计时；手动平仓结束循环，在无仓位的随机等待阶段也可以结束等待。部分成交或未知订单停止自动重开。
-
-已有持仓时可调整定期重开设置，修改间隔从保存时重新计时。卡片显示轮次、下一次定期平仓或随机等待时间。累计成交额包含此 Bot 所有轮次的双腿建仓和平仓，按实际成交数量 × 成交均价累加；未确认订单存在时总额显示待确认，成交记录可查看各笔已确认成交。
-
-Bot 卡片直接提供“修改参数”“成交记录”和“删除”。下单前可以修改所有参数；等待中修改交易参数后回到待运行，需要重新点击运行。有订单或持仓后，建仓账户、币种、价差和目标金额锁定，仍可修改名称及已确认状态下的平仓滑点。删除需确认，且仅允许没有持仓、没有未确认订单或操作的待运行、已暂停或已平仓 Bot；交易记录保留在数据库。
-
-卡片突出展示交易盈亏、手续费、累计成交额和下一次策略动作。交易盈亏已扣手续费、未计实际资金费，说明可悬停查看。网格默认展示相邻格线，可切换“全部格线”；持仓与资金费另列一行。参数摘要直接可见。未确认数据保持“待确认”，两位小数舍入为零统一显示 $0.00。
-
-资金费说明多空一侧预计支付或收取；等额双腿的预估净收取费率为做空费率减去做多费率，这不是实际到账收益。官方数据读取失败时明确显示暂不可用，单腿、数量不匹配和持仓待核实直接显示提示。
-
-支持 BTC、ETH、SOL 标准加密资产永续。不同合约单位及其他资产需要逐项核实后开放。两个同向 Bot 可共用同一个账户合约，并独立平仓；相反方向需要不同账户。
-
-对冲策略以可用抵押资产覆盖单侧名义金额作为初始资金检查，沿用交易所杠杆或保证金模式。已有外部持仓、未完成委托或未确认订单会阻止新提交，需要先核实。
-
-临时断线或行情过期时自动跳过本次动作并持续重试，连接恢复后继续运行。连续 5 分钟无法完成必要读取才暂停，保留持仓，检查连接后可点击运行。未提交的操作可重试；已提交但结果未知的原订单继续查询，不重复发送。
-
-## 永续网格
-
-“创建 Bot”选择“永续网格”，支持做多、做空、中性三种方向。选择一个账户实例，填写区间、网格数、投入保证金额度、杠杆和全仓/逐仓模式后直接保存。保证金额度 × 杠杆得到区间内名义仓位上限，页面显示交易所实际设置与市场上限。保存时检查杠杆精度、最小订单、资金和仓位占用；不合格参数不保存，保留已填内容。切换币种清空旧价格区间。
-
-保存不修改交易所设置；点击运行时才应用所选杠杆与模式，读回确认一致后启用。设置先加密存入日志，只发送一次；未确认时停止启用，后续只读核实，不自动重发。保证金额度用于数量计算，并非立即锁定全部资金；逐仓按实际建仓分配，全仓共享账户抵押品。程序不主动补保证金。
-
-第一版是价格触发网格：程序看价后提交真实限价 IOC，需要持续在线，不提前在交易所挂单。超出区间保留仓位等待，暂停保留游标，平仓结束。中性模式从启动价附近的空仓格位开始，先确认平仓再切换方向。账户的该币种由网格独占，不能与其他 Bot 或手动仓位混用。
-
-做多、做空网格可设置“启动时建仓”，新建时默认关闭：先生成格线并保持空仓，价格触发后每次买卖一份；开启时先按当前格位建立底仓，初始订单可能包含多份数量。中性网格始终从空仓开始。启动位置写入数据库，暂停恢复和服务重启不会重新建底仓。更改此选项需暂停或平仓、没有仓位及未确认操作。
-
-网格平仓确认后可点击“重新运行”，按当前价格重新初始化，保留同一 Bot 的历史成交和累计金额。暂停后的运行继续原格线；重新运行必须重新通过资金、订单与仓位占用检查。
-
-网格已暂停或已平仓、没有仓位和未确认操作时，可在“修改参数”调整区间、格数、方向、金额、杠杆与保证金模式。保存重新检查最小订单和资金，失败保留原配置；成功回到等待用户运行，按新参数初始化并保留历史成交和累计金额。已有订单记录时账户和币种保持固定，没有订单记录时可更换并核对原、新账户。
-
-运行中的网格遇到过期行情、临时网络错误或限流，会跳过本次交易，等待下一次有效报价，保留原仓位和格线。下单前已有订单日志的操作仍需核实原订单，不会作为行情故障自动重试。“需要处理”的网格在没有未确认订单、仓位与目标一致时，可点击“运行”重新检查并恢复。卡片区分带时间的上次停止原因与当前行情，暂停状态不因行情恢复而自动运行。
-
-网格参考 Hummingbot GridExecutor，并实际复用其等差生成代码；交易执行、费用和累计成交额复用现有原生路径。规则见 [网格使用说明](docs/GRID.md)，来源与复用范围见 [网格研究](docs/research/grid.md)。
-
-网格卡片用红绿订单墙展示实际格线、当前价格、下一格买卖触发价与距离，区分开仓/减仓并解释空仓或等待原因。订单墙是程序内的触发计划，不表示交易所已有挂单。对冲卡片展示按原策略数量计算的可成交价差、门槛、单侧目标及定期平仓/随机等待倒计时；数据过期保持不可用。
-
-## 当前接入与验证
-
-| 交易所 | 代码能力 | 已完成验证 |
+| Venue | Trading | Account points |
 | --- | --- | --- |
-| Arcus | 原生账户读取、Ed25519 订单签名、REST IOC、原订单及成交查询 | 官方目录与实际 BTC 盘口读取；签名、回执与成交解析测试 |
-| Lighter Robinhood | 官方 SDK 签名、账户校验、REST IOC、原订单查询 | 官方目录与实际 BTC 盘口读取；签名参数及订单解析测试 |
-| Lighter Core | 同上，独立部署和签名链 ID | 官方目录与实际 BTC 盘口读取；签名参数及订单解析测试 |
-| Hyperliquid / Binance | 尚未接入账户执行 | 待开发 |
+| Arcus | Native perpetual account and IOC execution | Not integrated |
+| Lighter Core | Official native signing SDK and IOC execution | Not integrated |
+| Lighter Robinhood | Separate native deployment and signing domain | Live total and historical chart |
+| Entropy | BTC/ETH/SOL on Hyperliquid's standard perpetual DEX | Not integrated |
 
-自动化测试使用隔离场馆和凭据，不向交易所提交订单。各交易所的账户与订单流程仍需独立实盘验收。
+Bot strategies accept **BTC, ETH and SOL**. Entropy requires a main trading account and a registered API agent; unified/portfolio margin, subaccounts, vaults and its own HIP-3 instruments are excluded. See [exchange setup and verified scope](docs/exchanges.md).
 
-订单在提交前写入本地日志。超时、回执丢失或重启后查询原订单身份，结果未知时停止新提交；不会盲目重发。首次实现使用 REST 轮询和最近历史，超过场馆可读历史范围的订单会保持未知，等待人工核实。手续费无法完整确认时显示待确认；实际资金费归属尚未接入，不能作为已知零值。价格盈亏与完整收益分开展示。
+## How bots work
 
-“积分”页只展示账户自己的积分。Lighter Robinhood 直接读取官方账户实时积分，后台每 2 分钟更新，也可以点击“刷新积分”，只更新页面中的数字。读取失败、数据过期或缺失显示不可用，只有官方明确返回 0 才展示 0。Core 的账户实时积分接口尚未确认，显示“暂未接入”并提供官网入口。
+- **Spread hedging:** bind two different account instances, choose a symbol, spread threshold and target amount per leg. The second leg follows the first leg's confirmed fill. Optional timed reopening closes the owned pair, waits a bounded random interval and checks the spread again.
+- **Grid:** bind one account, choose long/short/neutral, a fixed price range, grid count, investment margin, leverage and margin mode. The program watches prices and sends an IOC order when the next line is reached. Grid lines are conditional plans; orders are not placed on the exchange in advance.
+- **Run / Pause / Close:** Run enables or resumes the selected strategy; Pause keeps positions; Close handles only that bot's allocated inventory. A confirmed closed bot can run again.
 
-Arcus 积分暂未接入；页面显示“暂未接入”并提供官网积分入口。协议与限制见 [积分接入依据](docs/research/points.md)。积分显示不代表奖励资格，也不预测未来奖励。
+Signed orders are journaled before sending. Unknown outcomes are queried by the original order identity and are never blindly resent. Temporary reads retry; continuous failure for five minutes pauses the affected active strategy. The application adds no automatic stop-loss, compensating hedge or margin top-up outside the selected strategy's rules.
 
-账户积分每次实际采集都会保存到本地数据库，可查看最近 24 小时、7 天、30 天的历史曲线。关闭浏览器仍采集，重启保留历史。失败或超过 5 分钟未采集的区间在曲线上断开；未采集的历史不会补造。目前曲线可用于已接入的 Lighter Robinhood 账户。
+Trading PnL deducts confirmed fees and excludes actual funding payments. Funding forecasts are shown separately. Missing fees, points or execution evidence stay explicitly unknown. Points displays do not certify reward eligibility. Automated tests validate protocol handling and strategy logic; funded acceptance is venue-specific and is not certified by this project.
 
-通知包括站内告警和可选 Telegram。异常持仓只告警，不自动执行额外风险管理交易。关闭浏览器不会停止 Bot；停止程序会停止条件监测。
+![Implemented strategy library in the web interface](docs/assets/strategies.png)
 
-通知页保留历史事件，读取恢复后旧告警仍在；账户最新状态可在“账户实例”刷新查看。临时网络错误或 HTTP 502/503/504 的读取请求会在 0.5 秒后重试一次，总等待不超过 20 秒。持续失败仍显示不可用，订单提交不会重发。本地运行时电脑需要保持联网、不休眠；休眠/唤醒可能导致连接中断和超时。
-
-Bot 卡片定时局部更新，保留滚动位置和未保存表单。单腿或数量不匹配时醒目标记“双腿对冲尚未确认”。成交确认遇到临时网络错误、404/限流或不完整回报时，会在有限次数内继续查询同一笔原订单，不会重发订单；确认范围内仍未知时停止后续提交并保存原因。后台同步不会自行补上缺失的一腿。
-
-## 数据和开发
-
-运行数据保存在 `data/app.live.db`，数据库格式版本为 8。网格配置仅使用保证金额度、杠杆和保证金模式。不支持旧数据库格式或旧资金配置，不会自动转换。`docker compose down` 保留 volume。
-
-可配置 `PFB_HOST`、`PFB_PORT`、`PFB_DATA_DIR`、`PFB_TIMEZONE`（默认 Asia/Shanghai）；`.env.example` 提供参考。本地显式加载配置可使用 `uv run --env-file .env perp-farming-bots`。
+## Development and agent entry point
 
 ```bash
+uv sync --frozen
 make check
 make test
 ```
 
-测试专用的场馆替身只存在于 `tests/`，用于验证未知订单、部分成交和多 Bot 归属；应用不提供测试市场。
+Start with [AGENTS.md](AGENTS.md), then [CONTRIBUTING.md](CONTRIBUTING.md) and the [code and test map](docs/development.md). Documentation links are checked by `make docs-check` and CI. [Architecture](docs/architecture.md) describes the actual execution and persistence boundaries; [API reference](docs/api.md) describes the local endpoints.
 
-## 产品和来源
+## License and provenance
 
-第一版内置跨账户价差对冲及多、空、中性永续网格；剥头皮待规则明确后实现。Bot 的身份、订单和持仓归属不以对冲命名。
-
-本项目不复制、导入或移植任何私人交易项目的代码、测试、配置、数据或内部资料。公开依赖、官方协议资料和来源登记见 [UPSTREAMS.md](UPSTREAMS.md)。许可证为 Apache-2.0，公开依赖保留各自许可证。
-
-- [Bot 与账户实例](docs/BOTS.md)
-- [当前验证与剩余事项](docs/STATUS.md)
-- [实施范围](docs/IMPLEMENTATION.md)
-- [完整设计与后续方向](docs/DESIGN.md)
-- [真实接入协议依据](docs/research/native-execution.md)
+Application code is Apache-2.0. Public dependency licenses, SDK pins and the attributed Hummingbot grid geometry adaptation are recorded in [UPSTREAMS.md](UPSTREAMS.md). No private trading project's implementation, credentials or runtime data are included.

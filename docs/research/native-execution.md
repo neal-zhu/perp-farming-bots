@@ -4,7 +4,7 @@ Read independently on 2026-10-12 (Asia/Shanghai). No private trading source, cre
 
 ## Arcus
 
-Official primary sources, fetched successfully from this host:
+Official primary protocol sources:
 
 - [REST guide](https://docs.arcus.xyz/guides/rest-trading.md)
 - [Authentication](https://docs.arcus.xyz/api-reference/authentication.md)
@@ -18,7 +18,7 @@ Official primary sources, fetched successfully from this host:
 
 The Ed25519 private API seed is 32 bytes. A typed canonical order payload is signed with integer ticks/quantums, lowercase wallet address, original case-sensitive client ID, nanosecond timestamp and mandatory future expiry. IOC still requires goodTilTime at least a month ahead; the application uses 40 days. HTTP acknowledgements are not fills. Native order history and matching fill rows establish quantity and fees; incomplete evidence remains unknown. Book paths use the native display name, such as BTC-USD, not the numeric ID. Arcus quote price and collateral accounting do not imply USDG/USDC conversion is handled.
 
-This supersedes the earlier source-discovery finding that Arcus docs were inaccessible. Public metadata and actual BTC book connectivity succeeded. Private/account/order behavior still needs funded venue acceptance.
+Public metadata and BTC book connectivity were verified. Funded account/order acceptance remains separate from public reads and isolated protocol tests.
 
 ## Lighter
 
@@ -26,7 +26,7 @@ The pinned [official Python SDK](https://github.com/elliottech/lighter-python/tr
 
 The application reads nextNonce for the exact account/key, signs a LIMIT IOC with expiry 0, and sends once. Terminal native order fields filled_base_amount and filled_quote_amount establish actual fill quantity and average price. A transaction hash does not establish an order fill. Missing actual fee history is reported as unknown.
 
-The official [fee schedule](https://docs.lighter.xyz/trading/trading-fees.md) states Standard accounts have zero maker/taker trading fees; Plus/Premium schedules differ. The [authenticated trades endpoint](https://apidocs.lighter.xyz/reference/trades) supports exact order_index_str filtering. Official [Trade JSON](https://apidocs.lighter.xyz/docs/websocket-reference) documents zero fee omission. The application verifies the queried side's account/order/client identity, unique trade IDs and full cumulative quantity/notional before recording zero. It selects the queried participant's maker/taker fee, not the counterparty's fee. Nonzero fee rates remain unknown until monetary accounting is verified. A read-only check of a user-controlled RH fill confirmed zero using these rules; no trade was submitted by the agent.
+The official [fee schedule](https://docs.lighter.xyz/trading/trading-fees.md) states Standard accounts have zero maker/taker trading fees; Plus/Premium schedules differ. The [authenticated trades endpoint](https://apidocs.lighter.xyz/reference/trades) supports exact order_index_str filtering. Official [Trade JSON](https://apidocs.lighter.xyz/docs/websocket-reference) documents zero fee omission. The application verifies the queried side's account/order/client identity, unique trade IDs and full cumulative quantity/notional before recording zero. It selects the queried participant's maker/taker fee, not the counterparty's fee. Nonzero fee rates remain unknown until monetary accounting is verified. Zero-fee interpretation requires complete account/order-specific native trade evidence; a fee schedule alone is not used to fill a missing fee.
 
 Native signer selection is serialized and re-created for each use so equal account/key indices across deployments cannot share an accidentally selected signing domain. No builder/integrator parameters are enabled; pinned signer defaults are zero.
 
@@ -44,14 +44,12 @@ Initial executable pair assets are BTC, ETH and SOL: Arcus crypto perpetual base
 
 Public Arcus/Core/RH reads succeeded on 2026-10-12. The application validates exact native market identity, rejects stale stream timestamps and expired settlement times, and caches reads for 30 seconds. Failed refreshes return unavailable values rather than an old successful rate or zero. A displayed equal-notional net receipt rate (short minus long) is a current forecast, not a bot-specific realized payment or complete PnL.
 
-On a later 2026-10-12 live probe, both Core and RH subscription snapshots and subsequent updates had message timestamps about 70 ms ahead of the local receiving clock. A strict nonnegative-age check incorrectly reported these fresh messages as expired. The freshness policy now allows up to five seconds of upstream clock lead while retaining the 60-second maximum age and future settlement validation. Larger clock leads are explicitly reported as timestamp anomalies. A fixed-clock regression test replays the observed native snapshot through the complete funding read.
+Native funding stream clocks can lead the receiving clock slightly. The freshness policy allows at most five seconds of upstream clock lead while retaining the 60-second maximum age and future settlement validation. Larger leads remain explicit timestamp anomalies. Fixed-clock tests enforce these boundaries.
 
 The public [websockets](https://github.com/python-websockets/websockets) library (BSD-3-Clause) supplies the short read-only stream connection; no private account or trading stream is opened by funding display.
 
 ## Transient network reads
 
-On 2026-10-13, notification history contained 13 transport failures and one RH HTTP 502. All 13 transport failures were close to this Mac's Sleep/Wake/DarkWake events: 12 within one second, one within nine seconds. Both venues often failed together. This strongly suggests sleep/wake-related local connectivity loss; earlier logs did not retain low-level causes, so individual socket failures cannot be proven retrospectively. The separate RH 502 was not near a power transition. Six current public requests succeeded with normal certificate verification, and both authenticated account readers had recovered.
-
-The initial read path had no short retry: a single ConnectError immediately failed the logical read and generated an account notification. Tests reproduce that failure class followed by a successful native response. GET reads now allow one retry after transport failures or HTTP 502/503/504, with a 0.5-second delay and one 20-second total budget. Auth failures, 429 and other HTTP statuses are not rapidly retried. Writes retain one submission and use the existing original-order journal for uncertain acknowledgements. Exhausted reads remain explicitly unavailable. Points share transport handling and decode official decimals exactly.
+Read-only requests allow one retry after transport failures or HTTP 502/503/504, with a 0.5-second delay and one 20-second total budget. GET and Entropy POST `/info` are approved reads; signed writes never use this retry path. Auth failures, 429 and other HTTP statuses are not rapidly retried. Exhausted reads remain explicitly unavailable. Active strategy preflight failures retry across cycles and pause after five continuous minutes of unavailability; existing order journals require original-order recovery. The outage timer is process-local. Points share transport handling and decode official decimals exactly.
 
 [HTTPX transport documentation](https://www.python-httpx.org/advanced/transports/) limits built-in transport retry to ConnectError/ConnectTimeout. The application wrapper also handles transient read errors and gateway responses. Permanent diagnostics retain endpoint names, attempts, elapsed time, HTTP status and exception class chains; they exclude parameters, native IDs, tokens, headers, bodies and raw error text. The notifications page identifies retained historical events; recovery does not delete or acknowledge history. Continuous operation requires an awake, connected host.

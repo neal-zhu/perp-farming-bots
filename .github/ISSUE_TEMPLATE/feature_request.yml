@@ -1,0 +1,22 @@
+name: Feature request
+description: Describe a user problem and concrete expected behavior.
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected behavior
+      description: For trading features, specify entry, exit, budget, inventory ownership and pause/restart rules.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Official references or examples
+      description: Link public protocol documentation or licensed implementations when relevant.

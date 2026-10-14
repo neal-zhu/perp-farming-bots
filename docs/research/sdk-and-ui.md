@@ -1,6 +1,6 @@
 # Public SDK and UI research
 
-Checked: 2026-10-12, Asia/Shanghai. This report was prepared independently from public upstream repositories and official pages. No private trading source, fixtures, configurations, or internal documents were consulted for this redesign.
+Checked: 2026-10-12, Asia/Shanghai. This report was prepared independently from public upstream repositories and official pages. No private trading source, fixtures, configurations or internal documents supplied implementation evidence.
 
 ## Lighter Python SDK
 
@@ -16,7 +16,7 @@ Checked: 2026-10-12, Asia/Shanghai. This report was prepared independently from 
 
 Decision: directly use the official SDK behind a narrow application adapter for RH/Core. Serialize the necessary account/key signing resources; independently implement durable order lookup, settlement evidence and operation continuation.
 
-Follow-up: the real execution milestone successfully fetched Arcus official docs and public books. See [native protocol evidence](native-execution.md) for current implemented paths and validation limits. Earlier access failures below are historical findings.
+Current installed versions are defined by uv.lock. Implemented native paths are recorded in [native protocol evidence](native-execution.md); this file records SDK/UI source selection at the stated pins.
 
 ## Arcus public repositories
 
@@ -33,15 +33,11 @@ Reviewed spot SDK main commit: `7f91c67e1a93f3dd62964bdbee08e41ea4c8b8e0`, dated
 
 No public perpetual-order SDK was found in this returned organization list. This statement does not prove that no other official package exists. Recheck before implementation. Missing license metadata does not mean permission to copy ABI repository contents; inspect actual licensing before bundling those artifacts.
 
-During this research, the official authentication and order-placement docs URLs returned access errors in both normal and `.md` form. The independent Arcus adapter therefore still needs accessible primary API/signature documentation and native test evidence. Do not use an old private adapter to fill this gap.
-
-Decision: Arcus is a separate adapter milestone, not a free capability obtained by installing the spot SDK. Prefer an existing SDK-supported second venue for the quickest beta if the pilot pair is flexible; otherwise Arcus protocol verification is on the critical path.
+The application implements perpetual signing from the official REST and authentication contract, independently of the spot SDK. See [native protocol evidence](native-execution.md) for sources, units and recovery behavior.
 
 ## Points eligibility
 
-The official [Arcus announcement](https://arcus.xyz/blog/introducing-arcus-points) and [Protocol Terms, Annex C](https://arcus.xyz/legal/protocol-terms) were successfully read earlier in the same conversation on this date; repeated retrieval in this research returned access errors. Annex C §8(c) provides an eligibility exclusion for hedged/delta-neutral activity that Arcus judges primarily undertaken to farm points. This is material to this tool's stated purpose.
-
-Product inference: Arcus can be an execution integration, but the tool must not promise points for its hedged positions or estimate eligibility from volume. Current official balances, program identity, timestamps and eligibility limitations should be distinct data. RH points rules were not verified in this research and must not inherit Core rules.
+An official points balance and program eligibility are separate facts. The application does not certify reward eligibility or infer points from volume, a hedge or a builder code. Consult each venue's current official rules; Arcus references include its [points announcement](https://arcus.xyz/blog/introducing-arcus-points) and [Protocol Terms](https://arcus.xyz/legal/protocol-terms). Account integration scope is recorded in [points evidence](points.md).
 
 ## NiceGUI / FastAPI
 
@@ -52,4 +48,4 @@ Product inference: Arcus can be an execution integration, but the tool must not 
 
 Product inference: NiceGUI is a good V1 fit because one Python application delivers a browser dashboard and execution lifecycle without a separate frontend build/deployment. Its server-driven UI constrains scaling and fully offline page behavior; the intended single-owner self-host deployment makes these reasonable initial tradeoffs. UI requests must never own the lifespan of trading tasks.
 
-These are research pins, not a dependency lockfile. Resolve compatible release versions, verify package metadata and native artifacts, and lock hashes during implementation. No SDK or application dependencies have been installed by this design task.
+These are research pins, not installed dependency versions. pyproject.toml and uv.lock define the actual runtime; public dependency notices are tracked in UPSTREAMS.md. Native artifact file presence is not platform acceptance.

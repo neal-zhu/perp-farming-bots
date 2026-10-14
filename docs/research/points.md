@@ -7,19 +7,17 @@ Independently checked on 2026-10-12 (Asia/Shanghai). No private project supplied
 - [Official live-points endpoint](https://apidocs.rh.lighter.xyz/reference/livepoints_total.md): GET `/api/v1/livePoints/total`, required `account_index`, optional `authorization` header. Successful schema requires `code=200` and numeric `total_live_points`. The application uses the existing account API key to generate the native authorization token and shows this field as account-scoped real-time total.
 - [Program description](https://docs.lighter.xyz/points-program/lighter-on-robinhood-chain-points.md) describes real-time points plus weekly awards. The application displays the native account live-total field without estimating points or certifying reward eligibility.
 
-Only the user's own account live total is queried and displayed. The earlier `/api/v1/referral/points` statistics returned zero for cumulative/last-week fields despite a positive live total. Their relationship to real-time account points was not established. Per the user's decision, cumulative, weekly and referral statistics and their request path have been removed from the runtime and UI. A missing live-total field remains unknown and never falls back to the old statistics.
-
-Read-only authenticated live-total requests for the user's existing RH account succeeded. No real order was submitted.
+Only the account live total is queried and displayed. Referral, weekly and cumulative statistics do not establish this metric and are not used as replacements. Missing or invalid live-total fields remain unknown.
 
 ## Lighter Core
 
 No documented Core account live-total endpoint was found in its [API index](https://apidocs.lighter.xyz/llms.txt). Core therefore displays an explicit unsupported state; no Core points request is sent and no statistics endpoint is used as a replacement. Its existing trading/account execution path is unaffected.
 
-## Arcus deferred by product decision
+## Arcus and Entropy exclusions
 
-The [official application](https://app.arcus.xyz/) uses a separate points service and Privy login identity token, rather than the trading API key. Endpoint/authentication semantics were researched from publicly served frontend assets; no source implementation was copied. An account request without the official identity token returned HTTP 401; a subsequent user-authorized query with their temporary token returned HTTP 200.
+The [official Arcus application](https://app.arcus.xyz/) uses a separate points service with a Privy login identity token, rather than the trading API key. Authorization semantics were researched from public frontend assets; no implementation was copied. Trading API credentials do not establish authorization for this service. The application makes no Arcus points request, stores no browser session token and links to [Arcus Rewards](https://app.arcus.xyz/rewards).
 
-The user decided to defer Arcus points on 2026-10-12. All in-progress Arcus points request, authorization and token-storage code was removed, and the temporary saved authorization was removed from local settings. The application displays an explicit unsupported state and a link to [Arcus Rewards](https://app.arcus.xyz/rewards). It makes no Arcus points request and does not prompt for browser tokens or wallet signatures.
+Entropy account points are not integrated. Neither native Hyperliquid turnover nor the presence of an Entropy builder code is treated as evidence of an official points balance. Both providers return explicit unsupported values.
 
 ## Runtime and presentation
 

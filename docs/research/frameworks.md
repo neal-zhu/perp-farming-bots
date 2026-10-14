@@ -1,6 +1,6 @@
 # Framework research for Perp Farming Bots
 
-Scope note: the verified comparison below was performed for the first spread-hedging strategy. The product now includes future grid/scalping strategy categories; no claim is made that the same framework ranking automatically applies to those undefined implementations. Current technical findings and pinned sources remain valid as the recorded research snapshot.
+Scope: a dated comparison of public frameworks for the spread-hedging execution path. These source findings are not installed dependencies or a current supported-venue matrix. The actual implementation is described in [architecture](../architecture.md) and [exchange scope](../exchanges.md).
 
 Verified 2026-10-12 against public upstream repositories and first-party documentation. This research used no private trading repository, credentials, or live orders. Connector support below means source-level verification, not a successful authenticated trading test.
 
@@ -10,7 +10,7 @@ Use official venue SDKs/HTTP APIs behind a small independently implemented Pytho
 
 For the Arcus + Lighter Robinhood pilot, a whole Hummingbot or Nautilus stack does not remove the Arcus integration. The official Lighter Python SDK already has explicit Robinhood endpoint and signing-chain profiles. CCXT is attractive as an optional adapter for subsequent supported venues, rather than the foundation of pair ownership and recovery. Hummingbot is the strongest alternative if its full bot-management product is desired. Nautilus is strongest if the product grows into a broader event-driven trading engine. These rankings are judgments based on the verified evidence below.
 
-“No active risk management” should mean no strategy-driven liquidation, stop-loss, take-profit, automatic deleveraging, or rebalancing. It still requires durable order intents, partial-fill accounting, restart reconciliation, freshness checks, and alerts when a leg is unresolved. A timeout must remain an unknown order outcome until verified; automatically resending it can duplicate exposure. Each venue must explicitly verify the order identity and reduce-only close semantics before enabling live execution.
+The shared execution layer must not add unselected liquidation, stop-loss, take-profit, deleveraging or rebalancing actions. It still requires durable order intents, partial-fill accounting, restart reconciliation, freshness checks, and alerts when a leg is unresolved. A timeout must remain an unknown order outcome until verified; automatically resending it can duplicate exposure. Each venue must explicitly verify the order identity and reduce-only close semantics before enabling live execution.
 
 ## Pinned public sources and licenses
 

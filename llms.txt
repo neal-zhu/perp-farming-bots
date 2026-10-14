@@ -1,0 +1,25 @@
+# Perp Farming Bots
+
+> Self-hosted Python application for native perpetual spread hedging and fixed price-triggered grids. Single process, NiceGUI/FastAPI, SQLite and explicit bot-owned inventory. UI is Simplified Chinese.
+
+## Start
+
+- [Repository agent instructions](AGENTS.md): task boundaries, financial authority and required checks.
+- [Contributor workflow](CONTRIBUTING.md): isolated setup, code changes and verification.
+- [Code and test map](docs/development.md): route a change to its module and regression tests.
+- [Architecture](docs/architecture.md): native execution journal, storage and recovery.
+
+## Contracts
+
+- [Bot model](docs/BOTS.md): identities, allocations and lifecycle.
+- [Spread hedging](docs/hedging.md): entry, closing and timed reopening.
+- [Grid rules](docs/GRID.md): capital, startup inventory, triggers and cursor evidence.
+- [API reference](docs/api.md): read versus write effects and configuration shapes.
+- [Exchange scope](docs/exchanges.md): actual supported profiles and explicit limitations.
+
+## Operations and provenance
+
+- [Operations](docs/operations.md): local configuration, restart, backups and recovery.
+- [Security scope](SECURITY.md): local-only access and secret handling.
+- [Upstream register](UPSTREAMS.md): public dependency pins, licenses and attribution.
+- [Chinese user guide](docs/guide.zh-CN.md): current product flows and parameter explanations.

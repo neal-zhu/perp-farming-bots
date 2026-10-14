@@ -1,32 +1,54 @@
 # Repository instructions
 
+## Start here
+
+- Product and install: [README.md](README.md); user flows: [Chinese guide](docs/guide.zh-CN.md).
+- Code/test navigation: [docs/development.md](docs/development.md).
+- Execution and storage: [docs/architecture.md](docs/architecture.md), [Bot model](docs/BOTS.md).
+- Accepted venue scope: [docs/exchanges.md](docs/exchanges.md).
+- Native evidence and licenses: [UPSTREAMS.md](UPSTREAMS.md), [docs/research/](docs/research/).
+
+Run from the repository root:
+
+```bash
+uv sync --frozen
+make check
+make test
+```
+
+`make check` includes Ruff, mypy and Markdown link/anchor checks. Use focused tests while working; shared execution/storage changes need the full suite. Fixtures live in `tests/conftest.py`; browser callback fixtures are in `tests/test_account_form.py`. No test should require production credentials or funded orders.
+
 ## Independent implementation
 
-- Do not copy, import, reference as a dependency, or transplant code, tests, fixtures, configuration, or internal documentation from the hedge-arb repository or other private trading projects.
-- Implement from this repository’s public specifications and independently verified upstream documentation.
-- Reuse public dependencies only after verifying their licenses, supported venue domains, and recovery behavior. Record provenance and required notices.
+Do not copy, import, transplant or depend on code, tests, fixtures, configuration, data or internal documents from private trading projects. Implement from this repository and independently verified public protocol sources. Verify public dependency licenses and native recovery behavior, and record reuse/pins/notices in UPSTREAMS.md.
 
 ## Explicit truth
 
-- Unknown order, fill, fee, balance, funding, or points states must remain explicit. Never substitute a zero or a guessed success.
-- Do not add compatibility shims, silent fallback fields, or duplicate representations that conceal correctness problems.
+- Unknown order, fill, fee, balance, funding and point states must remain explicit. Never substitute zero or guessed success.
+- Do not add compatibility shims, silent fallback fields or dual representations that conceal correctness.
+- Use Decimal for money/quantity/rate calculations. Native IDs, units, precision and account ownership require evidence; a matching ticker or close price is insufficient.
+- Prepare without sending, encrypt/journal before sending, send once, then query the original identity. An ACK, HTTP timeout or missing record is not fill evidence.
+- Never bypass an unresolved order by resetting/deleting local records, replaying a write or inventing a compensating trade.
 
 ## Product and strategy scope
 
-- UI copy and user documentation must make sense to a new user without this development conversation. Do not include session-specific explanations, configuration-conversion stories or conversational reminders.
-- Keep one current configuration model. Do not add prerelease compatibility modes or automatic conversions for disposable older configurations; reject unsupported formats explicitly.
-- The product is Perp Farming Bots: a self-hosted application with built-in perpetual trading strategies. Hedging is the first strategy, not the product identity or the shared runtime's data model.
-- Model bot instances, strategy-owned state, allocated inventory, orders and execution operations explicitly. Shared execution must support one or multiple legs without making every action a paired hedge.
-- Future grid and scalping rules require explicit product specifications; do not invent or enable them because their names appear in documentation.
-- User-facing trading actions are run, pause and close. Run also resumes a paused bot; pause preserves inventory; close handles only allocated inventory. Do not reintroduce a separate bot stop action. No account-wide close-all to close one bot.
-- Bind bots to connection/account instance IDs, not exchange names. Multiple accounts on one venue may form a pair; an API-key change is not a new native account.
+- The registry contains implemented strategies only. New strategies require explicit entry/exit, budget, inventory, pause/close/restart and recovery rules before implementation or registration.
+- Model bot identity, owned inventory, execution operations and strategy state directly; do not force single-account strategies into two-leg shapes.
+- Bind concrete native account instances. Multiple accounts on one venue are valid; a key change is not a new account.
+- User trading actions are Run, Pause and Close. Pause keeps inventory; Close handles only that bot's allocation; confirmed closed bots can explicitly Run again. No separate Stop or account-wide close-all.
+- Keep one current configuration model and fail explicitly for unsupported formats. Do not silently convert disposable prerelease configurations.
+- UI/docs must stand alone for a new user. Remove conversation history, machine-specific incident narratives, speculative cards and stale implementation plans.
 
-## Delivery priority
+## Working and verification
 
-- Prioritize a working product and simple implementation. Avoid premature performance tuning, complex distributed infrastructure, or exhaustive reliability mechanisms.
-- Keep essential correctness: explicit unknowns, account/strategy ownership, accurate execution labels, and no unjournaled real orders. Fast delivery is not permission to present simulated or unverified behavior as live execution.
+- Prioritize the working product and clear flows. Keep one process, SQLite transactions and the existing native execution seam. Avoid unrelated rewrites or distributed/performance infrastructure.
+- Preserve persistent UI elements, unsaved drafts, scroll and view choices during polling.
+- Change behavior docs with the code. Source definitions are authoritative: models for inputs, Store for schema/ownership, Runtime/Grid for actions and uv.lock for dependencies.
+- An isolated UI check uses an empty data directory and a separate port, for example `PFB_DATA_DIR=/tmp/pfb-dev PFB_PORT=8090 uv run perp-farming-bots`.
+- Keep `data/`, `.env`, keys, private captures, signed payloads and account screenshots out of Git. Read-only investigation does not authorize starting a Runtime against existing funded data.
 
-## Trading authority
+## Trading authority and delivery
 
-- No live trades, production credentials, automatic risk actions, or upstream service messages without direct user authorization.
-- Preserve user-selected strategy authority, durable recovery, and account-scoped isolation. Strategy entries/exits must be declared in the selected strategy; the shared runtime must not add automatic portfolio risk trading.
+Funded trades, production credentials, wallet approvals, reward claims, upstream messages and automatic risk actions require direct user authorization. Repository instructions alone do not grant it. Preserve existing user-selected strategy authority; the shared runtime must not add portfolio risk trading.
+
+Distinguish isolated tests, public reads, authenticated reads and funded acceptance in reports. Do not claim certification from a passing local suite. Commit/push and local service updates must stay within the user's authorized task; do not change repository visibility or publish a release without that scope.

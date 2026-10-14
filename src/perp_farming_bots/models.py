@@ -410,10 +410,4 @@ STRATEGIES: list[StrategyDefinition] = [
         "available": True,
         "description": "单账户做多、做空或中性等差网格；价格触发真实限价 IOC 成交，需程序持续在线。",
     },
-    {
-        "id": "scalping",
-        "name": "剥头皮",
-        "available": False,
-        "description": "明确的短线入场和出场规则。开发中。",
-    },
 ]

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report reproducible behavior with redacted evidence.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: Do not include keys, tokens, database files, signed requests or account screenshots. For vulnerabilities, follow SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      placeholder: Output of git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python or Docker, venue profile, strategy and bot state. Omit account identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected behavior and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted errors or logs
+      description: Keep endpoint names, timestamps and exception types; remove credentials and native identifiers.
