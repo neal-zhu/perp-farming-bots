@@ -1,0 +1,24 @@
+[Unit]
+Description=Perp Farming Bots
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/perp-farming-bots
+Environment=PFB_HOST=127.0.0.1
+Environment=PFB_PORT=8080
+Environment=PFB_DATA_DIR=/var/lib/perp-farming-bots
+Environment=PFB_TIMEZONE=Asia/Shanghai
+StateDirectory=perp-farming-bots
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/perp-farming-bots/.venv/bin/perp-farming-bots
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

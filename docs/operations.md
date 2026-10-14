@@ -35,6 +35,44 @@ ssh -N -L 8080:127.0.0.1:8080 user@server
 
 Open http://127.0.0.1:8080 on your own computer. Use a different local port if 8080 is already occupied. Public port exposure is outside the supported setup; see [security scope](../SECURITY.md).
 
+## Linux service with systemd
+
+The [service unit](../deploy/perp-farming-bots.service) runs under the existing `ubuntu` user, from `/opt/perp-farming-bots`, with private state in `/var/lib/perp-farming-bots`. It listens on `127.0.0.1:8080`, starts at boot and restarts after a process failure. Install Git and [uv](https://docs.astral.sh/uv/getting-started/installation/) first. If your server uses another account, edit the unit's `User` and `Group` and use that owner when creating the checkout.
+
+For a new installation, run as `ubuntu`:
+
+```bash
+sudo install -d -m 755 -o ubuntu -g ubuntu /opt/perp-farming-bots
+git clone https://github.com/neal-zhu/perp-farming-bots.git /opt/perp-farming-bots
+cd /opt/perp-farming-bots
+uv sync --frozen --no-dev --python 3.12
+sudo install -m 644 deploy/perp-farming-bots.service /etc/systemd/system/perp-farming-bots.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now perp-farming-bots
+```
+
+Do not clone over an existing installation. For an existing data directory, restore its database and matching encryption key before starting the service. The service invokes the installed executable directly, without downloading dependencies on restart. Use the SSH tunnel above to access it.
+
+```bash
+sudo systemctl status --no-pager perp-farming-bots
+sudo journalctl -u perp-farming-bots -n 100 --no-pager
+sudo systemctl stop perp-farming-bots
+sudo systemctl restart perp-farming-bots
+```
+
+Before an update, stop this service, back up `/var/lib/perp-farming-bots`, update the checkout and run `uv sync --frozen --no-dev --python 3.12`, then restart. Keep the original service user so the same private data directory remains readable.
+
+## Move an existing instance to another host
+
+Prepare the destination's code and dependencies without starting its application. Use code matching the source database schema. Then:
+
+1. Gracefully stop the source application and verify that its process has exited. Keep it stopped throughout the move.
+2. Back up the source data directory privately. Transfer the database and its matching `encryption.key` together over SSH. Preserve all bot, inventory, journal and history records; use SQLite's backup API if exporting the database separately.
+3. Place the files in the destination's configured data directory, owned by its service user, with directory mode `700` and file mode `600`. Preserve any existing destination data separately before restoring. Verify the transferred files and database integrity before startup.
+4. Start only the destination instance, then inspect health, account connectivity and bot state. Healthy active bots resume their existing authority; interrupted operations retain the original-order recovery rules.
+
+Never run both hosts against copies of the same trading state. A rollback also requires stopping the destination first and carrying its latest database and matching key back, so confirmed trades and recovery evidence are not lost.
+
 ## Health and logs
 
 ```bash
