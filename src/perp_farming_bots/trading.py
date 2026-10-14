@@ -529,6 +529,10 @@ class Accounts:
         self.errors: dict[str, str] = {}
 
     def adapter_for(self, value: ConnectionCreate) -> Adapter:
+        if value.provider == Provider.ENTROPY:
+            from .entropy import Entropy
+
+            return Entropy(value, self.markets)
         if value.provider == Provider.ARCUS:
             return Arcus(value, self.markets)
         if value.provider in CHAIN_IDS:
@@ -560,6 +564,8 @@ class Accounts:
             snapshot = await self.adapter(connection_id).snapshot()
         except Exception as exc:
             self.errors[connection_id] = str(exc) if isinstance(exc, ValueError) else "账户读取失败，请重试"
+            if isinstance(exc, VenueRequestError):
+                raise
             raise ValueError(self.errors[connection_id]) from exc
         self.snapshots[connection_id] = snapshot
         self.errors.pop(connection_id, None)

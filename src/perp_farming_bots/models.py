@@ -12,6 +12,7 @@ class Provider(StrEnum):
     LIGHTER = "lighter"
     LIGHTER_RH = "lighter_robinhood"
     ARCUS = "arcus"
+    ENTROPY = "entropy"
     HYPERLIQUID = "hyperliquid"
     BINANCE = "binance"
 
@@ -20,10 +21,11 @@ PROVIDER_NAMES = {
     Provider.LIGHTER: "Lighter Core",
     Provider.LIGHTER_RH: "Lighter Robinhood",
     Provider.ARCUS: "Arcus",
+    Provider.ENTROPY: "Entropy",
     Provider.HYPERLIQUID: "Hyperliquid",
     Provider.BINANCE: "Binance USD-M",
 }
-TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH}
+TRADING_PROVIDERS = {Provider.ARCUS, Provider.LIGHTER, Provider.LIGHTER_RH, Provider.ENTROPY}
 SUPPORTED_ASSETS = {"BTC", "ETH", "SOL"}
 
 
@@ -53,7 +55,7 @@ class StrictModel(BaseModel):
 class ConnectionCreate(StrictModel):
     name: str = Field(min_length=1, max_length=80)
     provider: Provider
-    account_index: int = Field(ge=0, lt=2**48)
+    account_index: int | None = Field(default=None, ge=0, lt=2**48)
     address: str | None = Field(default=None, pattern=r"^0x[0-9a-fA-F]{40}$")
     api_key_index: int | None = Field(default=None, ge=0, le=254)
     api_private_key: SecretStr = Field(min_length=32, max_length=256)
@@ -69,7 +71,20 @@ class ConnectionCreate(StrictModel):
     def valid_credentials(self) -> ConnectionCreate:
         if self.provider not in TRADING_PROVIDERS:
             raise ValueError("该交易所的账户接入尚未完成")
-        if self.provider == Provider.ARCUS:
+        if self.provider == Provider.ENTROPY:
+            if self.address is None or self.account_index is not None or self.api_key_index is not None:
+                raise ValueError("Entropy 使用交易账户地址和 API 代理密钥，不使用账户或 key 编号")
+            try:
+                key = bytes.fromhex(self.api_private_key.get_secret_value().removeprefix("0x"))
+                if len(key) != 32 or not 0 < int.from_bytes(key, "big") < int(
+                    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16
+                ):
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("Entropy API 代理私钥必须是有效的 32 字节十六进制密钥") from exc
+        elif self.account_index is None:
+            raise ValueError("请输入账户编号")
+        elif self.provider == Provider.ARCUS:
             if self.address is None or self.account_index > 9 or self.api_key_index is not None:
                 raise ValueError("Arcus 需要钱包地址和 0–9 的子账户编号，不使用 API key 编号")
             try:
@@ -89,7 +104,7 @@ class Connection(StrictModel):
     id: str
     name: str
     provider: Provider
-    account_index: int
+    account_index: int | None
     address: str | None
     api_key_index: int | None
     account_ref: str

@@ -51,9 +51,9 @@ async def test_neutral_wall_explains_zero_inventory_and_next_actual_lines(page, 
     assert "目标仓位为 0" in monitor.explanation.text
     assert "已确认成交 0 笔" in monitor.inventory.text
     assert monitor.rows[2].status.text == "基准格线"
-    assert monitor.rows[1].status.text == "下一格 · 等待触发"
-    assert monitor.rows[3].status.text == "下一格 · 等待触发"
-    assert monitor.rows[0].status.text == "后续格线"
+    assert monitor.rows[1].status.text == "下一格"
+    assert monitor.rows[3].status.text == "下一格"
+    assert monitor.rows[0].status.text == "后续"
     assert (store.grid_state(bot.id), store.positions(bot.id), store.bot_orders(bot.id)) == before
     assert adapter.sent == []
 
@@ -90,7 +90,7 @@ async def test_paused_and_unknown_quote_never_show_active_grid_triggers(page, en
     with page:
         monitor = GridMonitor()
     monitor.update(store.bot(bot.id), store, await observe_strategy(runtime, store.bot(bot.id)))
-    assert monitor.rows[1].status.text == "下一格 · 已暂停"
+    assert monitor.rows[1].status.text == "已暂停"
     assert "不会触发交易" in monitor.status.text
     store.set_state(bot.id, BotState.HOLDING, "isolated test state")
     prices["stale"] = True
@@ -99,7 +99,7 @@ async def test_paused_and_unknown_quote_never_show_active_grid_triggers(page, en
     monitor.update(store.bot(bot.id), store, market)
     assert monitor.values[0].text == "暂不可用"
     assert "距离待确认" in monitor.hints[1].text
-    assert monitor.rows[1].status.text == "下一格 · 暂不执行"
+    assert monitor.rows[1].status.text == "暂不执行"
     assert "旧价" in monitor.ticker_hint.text
     assert adapter.sent == []
 
@@ -144,3 +144,28 @@ async def test_hedge_uses_execution_spread_and_unavailable_quote_remains_unknown
     assert monitor.values[0].text == "暂不可用"
     assert monitor.status.text == "报价暂不可用"
     assert runtime.accounts.adapter(a.id).sent == runtime.accounts.adapter(b.id).sent == []
+
+
+async def test_nearby_wall_visibility_survives_polling_and_all_lines_toggle(page, env, monkeypatch):
+    store, runtime, account, _ = env
+    await grid_market(runtime, account, monkeypatch)
+    bot = grid_bot(store, account, grid_count=20)
+    await runtime.command(bot.id, 'run')
+    assert await runtime.grid.tick(bot.id)
+    runtime.last_tick = time.time()
+    with page:
+        monitor = GridMonitor()
+    bot = store.bot(bot.id)
+    market = await observe_strategy(runtime, bot)
+    monitor.update(bot, store, market)
+    assert 'hidden' in monitor.rows[0].root.classes
+    monitor.update(bot, store, market)
+    assert 'hidden' in monitor.rows[0].root.classes, 'Polling removed the DOM visibility class'
+    assert not monitor.rows[0].root.visible
+    assert sum(row.root.visible for row in monitor.rows.values()) == 6
+    monitor.show_all.set_value(True)
+    assert monitor.rows[0].root.visible and 'hidden' not in monitor.rows[0].root.classes
+    monitor.update(bot, store, market)
+    assert monitor.show_all.value is True and sum(row.root.visible for row in monitor.rows.values()) == 20
+    monitor.show_all.set_value(False)
+    assert 'hidden' in monitor.rows[0].root.classes

@@ -17,6 +17,7 @@ dependencies = [
   "lighter-sdk @ git+https://github.com/elliottech/lighter-python.git@04bee9ba9811b87ef1cccc568e7f590b5fe649bb",
   "truststore>=0.10,<1",
   "websockets>=15,<18",
+  "hyperliquid-python-sdk==0.24.0",
 ]
 
 [project.scripts]

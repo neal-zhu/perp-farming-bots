@@ -6,7 +6,7 @@ from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
-from .markets import QuoteUnavailable, require_fresh_book
+from .markets import require_fresh_book
 from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, StrictModel
 from .store import operations
 
@@ -168,6 +168,8 @@ class Grid:
             raise ValueError("未知网格操作")
 
     async def tick(self, bot_id: str) -> bool:
+        from .runtime import transient_read
+
         async with self.runtime.guard:
             r = self.runtime
             bot = r.store.bot(bot_id)
@@ -188,6 +190,7 @@ class Grid:
                 if state is None:
                     preview = await self.preview(bot)
                     if not preview.inside_range:
+                        r.read_recovered(bot.id)
                         r.store.set_state(bot.id, BotState.WAITING, "当前价格在网格区间外，等待进入区间")
                         return False
                     if not preview.can_initialize:
@@ -218,7 +221,9 @@ class Grid:
                     )
                     require_fresh_book(book)
                     midpoint = (book.bids[0].price + book.asks[0].price) / 2
+                    # Clear only on a complete read cycle, not partial account recovery.
                     if not levels[0] <= midpoint <= levels[-1]:
+                        r.read_recovered(bot.id)
                         r.store.set_state(
                             bot.id, BotState.HOLDING, "价格在网格区间外；保留仓位，等待回到区间"
                         )
@@ -230,10 +235,12 @@ class Grid:
                     elif cursor < p.grid_count and book.bids[0].price >= levels[cursor + 1]:
                         cursor += 1
                     else:
+                        r.read_recovered(bot.id)
                         r.store.set_state(bot.id, BotState.HOLDING, "网格运行中，等待相邻格线")
                         return False
                     target = target_quantity(p, cursor, quantity, state["zero_inventory_cursor"])
                     if target == current:
+                        r.read_recovered(bot.id)
                         r.store.set_state(
                             bot.id, BotState.HOLDING, "当前空仓，等待开仓方向的格线；不反向开仓"
                         )
@@ -274,21 +281,19 @@ class Grid:
                     if result.quantity != abs(delta):
                         raise ValueError("本格订单未完全成交；保留实际仓位，停止后续动作，请平仓处理")
                 r.store.complete_grid_action(bot.id, op_id)
+                r.read_recovered(bot.id)
                 return True
-            except QuoteUnavailable as exc:
-                if op_id is not None:
-                    try:
-                        r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
-                    except ValueError as guard_error:
-                        self._fail(bot.id, op_id, guard_error)
-                        return False
-                r.store.set_state(bot.id, bot.state, f"行情暂不可用，等待下一次更新：{exc}")
-                r.store.alert(
-                    f"{bot.name}：行情暂不可用，跳过本次交易；恢复后继续检查原网格", bot.id, "warning"
-                )
-                return False
             except Exception as exc:
-                self._fail(bot.id, op_id, exc)
+                if transient_read(exc):
+                    if op_id is not None:
+                        try:
+                            r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
+                        except ValueError as guard_error:
+                            self._fail(bot.id, op_id, guard_error)
+                            return False
+                    r.retry_read(bot, exc)
+                else:
+                    self._fail(bot.id, op_id, exc)
                 return False
 
     def _fail(self, bot_id: str, op_id: str | None, exc: Exception) -> None:

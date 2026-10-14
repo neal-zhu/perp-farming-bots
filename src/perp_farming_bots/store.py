@@ -50,7 +50,7 @@ connections = Table(
     Column("name", String, nullable=False, unique=True),
     Column("provider", String, nullable=False),
     Column("account_ref", String, nullable=False),
-    Column("account_index", Integer, nullable=False),
+    Column("account_index", Integer, nullable=True),
     Column("address", String, nullable=True),
     Column("api_key_index", Integer, nullable=True),
     Column("credentials", Text, nullable=False),
@@ -208,8 +208,8 @@ class Store:
         self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
         with self.engine.begin() as db:
             version = db.exec_driver_sql("PRAGMA user_version").scalar_one()
-            if version not in {0, 8}:
-                raise ValueError(f"Unsupported database schema version {version}; expected 8")
+            if version not in {0, 9}:
+                raise ValueError(f"Unsupported database schema version {version}; expected 9")
             if (
                 version == 0
                 and db.exec_driver_sql(
@@ -220,7 +220,7 @@ class Store:
                 raise ValueError("Database has no schema version; use a new database")
         metadata.create_all(self.engine)
         with self.engine.begin() as db:
-            db.exec_driver_sql("PRAGMA user_version=8")
+            db.exec_driver_sql("PRAGMA user_version=9")
 
     @contextmanager
     def transaction(self) -> Iterator[DBConnection]:
@@ -236,8 +236,12 @@ class Store:
         account_ref = (
             f"{value.address}:{value.account_index}"
             if value.provider.value == "arcus"
+            else value.address
+            if value.provider.value == "entropy"
             else str(value.account_index)
         )
+        if account_ref is None:
+            raise ValueError("缺少原生账户身份")
         item = Connection(
             **value.model_dump(exclude={"api_private_key"}),
             account_ref=account_ref,
@@ -898,6 +902,21 @@ class Store:
                 )
             )
         return op_id
+
+    def skip_unsent_open(self, bot_id: str, op_id: str, reason: str) -> None:
+        with self.transaction() as db:
+            op = db.execute(select(operations).where(operations.c.id == op_id)).mappings().one()
+            cycle = db.execute(select(bot_cycles).where(bot_cycles.c.bot_id == bot_id)).mappings().one()
+            if (
+                op["bot_id"] != bot_id
+                or op["kind"] != "open"
+                or op["status"] != "pending"
+                or cycle["open_operation_id"] != op_id
+                or db.execute(select(orders.c.id).where(orders.c.operation_id == op_id)).first() is not None
+            ):
+                raise ValueError("本轮已有订单日志或状态不符，不能自动重试")
+            self.finish_operation(op_id, "skipped", reason, db)
+            db.execute(update(bot_cycles).where(bot_cycles.c.bot_id == bot_id).values(open_operation_id=None))
 
     def finish_operation(self, op_id: str, status: str, message: str, db: DBConnection | None = None) -> None:
         query = (

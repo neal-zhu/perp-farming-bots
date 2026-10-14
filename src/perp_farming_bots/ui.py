@@ -621,13 +621,17 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     help_label = ui.label(
                         "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
                     ).classes("text-sm text-slate-500")
+                    ui.link("Entropy", "https://entropy.io", new_tab=True)
+                    ui.link("Hyperliquid API 代理", "https://app.hyperliquid.xyz/API", new_tab=True)
                     ui.link("Arcus API Keys", "https://app.arcus.xyz/api-keys", new_tab=True)
                     ui.link("Lighter Robinhood", "https://robinhoodchain.lighter.xyz/apikeys", new_tab=True)
 
                     def change_provider():
                         is_arcus = provider.value == Provider.ARCUS.value
-                        wallet.set_visibility(is_arcus)
-                        key_index.set_visibility(not is_arcus)
+                        is_entropy = provider.value == Provider.ENTROPY.value
+                        wallet.set_visibility(is_arcus or is_entropy)
+                        index.set_visibility(not is_entropy)
+                        key_index.set_visibility(not is_arcus and not is_entropy)
                         index.set_label("子账户编号" if is_arcus else "Account Index")
                         index.set_value(0 if is_arcus else None)
                         key_index.set_value(None)
@@ -635,6 +639,8 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         help_label.set_text(
                             "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
                             if is_arcus
+                            else "Entropy：使用交易账户地址与 Hyperliquid API 代理私钥。先在 Entropy 官网连接钱包完成交易授权。支持 BTC、ETH、SOL；请勿填写主钱包私钥。"
+                            if is_entropy
                             else "Lighter：填写该部署的 Account Index、API key 编号和 API 私钥。"
                         )
 
@@ -649,8 +655,11 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             return
                         form_error.set_text("")
                         is_arcus = provider.value == Provider.ARCUS.value
-                        checks = [name.validate(), index.validate(), signing_key.validate()]
-                        checks.append(wallet.validate() if is_arcus else key_index.validate())
+                        is_entropy = provider.value == Provider.ENTROPY.value
+                        checks = [name.validate(), signing_key.validate()]
+                        if not is_entropy:
+                            checks.append(index.validate())
+                        checks.append(wallet.validate() if is_arcus or is_entropy else key_index.validate())
                         if not all(checks):
                             form_error.set_text("请先修正标红的字段，再验证账户。")
                             return
@@ -671,10 +680,14 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                             value = ConnectionCreate(
                                 name=name.value,
                                 provider=Provider(provider.value),
-                                account_index=index.value if index.value is not None else -1,
-                                address=wallet.value.strip() if is_arcus else None,
+                                account_index=None
+                                if is_entropy
+                                else index.value
+                                if index.value is not None
+                                else -1,
+                                address=wallet.value.strip() if is_arcus or is_entropy else None,
                                 api_key_index=key_index.value
-                                if not is_arcus and key_index.value is not None
+                                if not is_arcus and not is_entropy and key_index.value is not None
                                 else None,
                                 api_private_key=SecretStr(signing_key.value.strip()),
                             )

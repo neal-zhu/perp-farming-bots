@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from nicegui import ui
 
-from .formatting import grid_capital_text, money, rate, stamp
+from .formatting import money, rate, stamp
 from .grid import target_quantity
 from .markets import require_fresh_book
 from .models import Book, Bot, BotState, GridParameters, HedgeParameters, MarginSnapshot, Preview
@@ -88,13 +88,17 @@ class StrategyMonitor:
                         self.values.append(ui.label().classes("pfb-monitor-stat-value"))
                         self.hints.append(ui.label().classes("pfb-monitor-stat-hint"))
             self.status = ui.label().classes("pfb-monitor-status")
-            self.explanation = ui.label().classes("pfb-monitor-explanation")
+            with self.status:
+                self.explanation = ui.tooltip("")
 
     def set_health(self, bot: Bot, last_tick: float | None):
         active = bot.state in {BotState.HOLDING, BotState.WAITING}
         alive = loop_alive(last_tick)
+        retrying = active and bot.reason.startswith("连接重试中")
         self.health.set_text(
-            "正常监测"
+            "重试中"
+            if retrying
+            else "正常监测"
             if active and alive
             else "监测状态待确认"
             if active
@@ -107,7 +111,7 @@ class StrategyMonitor:
             else "尚未运行"
         )
         self.health.classes(
-            replace="pfb-monitor-health" + (" pfb-monitor-health--live" if active and alive else "")
+            replace="pfb-monitor-health" + (" pfb-monitor-health--live" if active and alive and not retrying else "")
         )
 
 
@@ -124,14 +128,19 @@ class GridLine:
 
 class GridMonitor(StrategyMonitor):
     def __init__(self):
-        super().__init__(
-            "网格触发计划", "程序内等待价格触发 · 交易所未提前挂单", ("当前价格", "下一格买入", "下一格卖出")
-        )
+        super().__init__("网格计划", "价格触发交易 · 需程序在线", ("当前价格", "下一格买入", "下一格卖出"))
         self.values[0].tooltip("盘口中价仅用于定位；买入按可成交卖价、卖出按可成交买价检查触发。")
         self.root.classes("pfb-grid-monitor")
+        self.cursor: int | None = None
         self.rows: dict[int, GridLine] = {}
         with self.root:
-            self.inventory = ui.label().classes("pfb-grid-inventory")
+            with ui.element("div").classes("pfb-wall-toolbar"):
+                self.inventory = ui.label().classes("pfb-grid-inventory")
+                self.show_all = (
+                    ui.switch("全部格线", value=False, on_change=lambda: self.filter_rows())
+                    .props("dense size=xs")
+                    .classes("pfb-wall-toggle")
+                )
             self.native_margin = ui.label().classes("pfb-monitor-caption")
             self.empty = ui.label("运行后显示实际格线和每格数量").classes("pfb-monitor-empty")
             self.wall = ui.element("div").classes("pfb-grid-wall")
@@ -146,9 +155,15 @@ class GridMonitor(StrategyMonitor):
                         ui.icon("my_location", size="16px")
                         self.ticker_price = ui.label()
                         self.ticker_hint = ui.label().classes("pfb-grid-ticker-hint")
-            ui.label(
-                "突出显示的是下一格；其他格线需逐格成交后才会启用。基准格线表示策略位置，不代表成交记录。"
-            ).classes("pfb-monitor-footnote")
+            self.wall.tooltip("格线为程序内交易计划，未在交易所提前挂单；每次确认成交后推进到相邻格线。")
+
+    def filter_rows(self):
+        for index, row in self.rows.items():
+            row.root.set_visibility(
+                self.cursor is not None
+                and index != self.cursor
+                and (self.show_all.value or abs(index - self.cursor) <= 3)
+            )
 
     def update(self, bot: Bot, store: Store, market: GridMarket | HedgeMarket):
         assert isinstance(market, GridMarket) and isinstance(bot.parameters, GridParameters)
@@ -159,19 +174,13 @@ class GridMonitor(StrategyMonitor):
             if bot.state == BotState.CLOSED
             else "尚未启动 · 点击运行后生成格线"
             if bot.state == BotState.READY
-            else "程序内等待价格触发 · 交易所未提前挂单"
+            else "价格触发交易 · 需程序在线"
         )
         state = store.grid_state(bot.id)
         pending = store.bot_pending(bot.id)
         positions = store.positions(bot.id)
         history = store.rows(fills, bot.id)
-        inventory = "；".join(
-            f"{'多仓' if pos.role == 'long' else '空仓'} {pos.quantity} {p.symbol}" for pos in positions
-        ) or ("尚未确认" if pending else "空仓")
-        self.inventory.set_text(
-            f"已确认仓位：{inventory} · 已确认成交 {len(history)} 笔 · {grid_capital_text(p)}"
-            + (" · 未确认订单尚未计入" if pending else "")
-        )
+        self.inventory.set_text(f"已确认成交 {len(history)} 笔" + (" · 有待确认订单" if pending else ""))
         margin = market.margin
         if margin is not None and 0 <= time.time() - margin.received_at <= 15:
             native = (
@@ -180,11 +189,18 @@ class GridMonitor(StrategyMonitor):
                 else "当前设置未返回"
             )
             self.native_margin.set_text(
-                f"交易所当前：{native} · 最高 {margin.max_leverage.normalize():f} 倍"
+                f"杠杆 {native} · 最高 {margin.max_leverage.normalize():f} 倍"
                 + (f" · 逐仓余额 {money(margin.position_margin)}" if margin.margin_mode == "isolated" else "")
             )
         else:
             self.native_margin.set_text(f"交易所保证金设置暂不可用：{market.margin_error or '数据已过期'}")
+        settings_match = (
+            margin is not None
+            and margin.leverage == p.capital.leverage
+            and margin.margin_mode == p.capital.margin_mode
+        )
+        self.native_margin.set_visibility(not settings_match)
+        self.show_all.set_visibility(state is not None)
         book = market.book if market.book is not None and market.book.fresh() else None
         mid = (book.bids[0].price + book.asks[0].price) / 2 if book else None
         self.values[0].set_text(money(mid) if mid is not None else "暂不可用")
@@ -237,6 +253,7 @@ class GridMonitor(StrategyMonitor):
             return
         levels = [Decimal(v) for v in state["levels"]]
         cursor, quantity = state["cursor"], Decimal(state["quantity_per_grid"])
+        self.cursor = cursor
         anchor = state["zero_inventory_cursor"]
         for slot, index, side in ((1, cursor - 1, "buy"), (2, cursor + 1, "sell")):
             in_range = 0 <= index < len(levels)
@@ -274,7 +291,10 @@ class GridMonitor(StrategyMonitor):
             and book is not None
             and not outside
         )
-        if pending or not state["initialized"]:
+        if bot.reason.startswith("连接重试中") and bot.state in {BotState.HOLDING, BotState.WAITING}:
+            status, explanation = "连接重试中", bot.reason
+            enabled = False
+        elif pending or not state["initialized"]:
             status, explanation = "订单或仓位待确认", bot.reason
         elif bot.state == BotState.ATTENTION:
             status = "策略已停止，等待处理"
@@ -315,12 +335,13 @@ class GridMonitor(StrategyMonitor):
             side = "sell" if index > cursor else "buy" if index < cursor else "cursor"
             nearest = abs(index - cursor) == 1
             row.root.classes(
-                replace=f"pfb-grid-line pfb-grid-line--{side}" + (" pfb-grid-line--next" if nearest else "")
+                remove="pfb-grid-line--buy pfb-grid-line--sell pfb-grid-line--cursor pfb-grid-line--next",
+                add=f"pfb-grid-line--{side}" + (" pfb-grid-line--next" if nearest else "")
             )
             row.root.style(f"order: {(len(levels) - 1 - index) * 2}")
             row.price.set_text(money(price))
             if side == "cursor":
-                row.action.set_text("当前基准")
+                row.action.set_text("策略格位")
                 row.quantity.set_text("—")
                 row.status.set_text("基准格线")
             else:
@@ -345,14 +366,15 @@ class GridMonitor(StrategyMonitor):
                 row.action.set_text(("买入" if side == "buy" else "卖出") + f" · {effect}")
                 row.quantity.set_text(f"{quantity} {p.symbol}")
                 row.status.set_text(
-                    "下一格 · 等待触发"
+                    "下一格"
                     if nearest and enabled
-                    else "下一格 · 已暂停"
+                    else "已暂停"
                     if nearest and bot.state == BotState.PAUSED
-                    else "下一格 · 暂不执行"
+                    else "暂不执行"
                     if nearest
-                    else "后续格线"
+                    else "后续"
                 )
+        self.filter_rows()
         ticker_order = sum(price > mid for price in levels) * 2 - 1 if mid is not None else len(levels)
         self.ticker.style(f"order: {ticker_order}")
         self.ticker_price.set_text(f"当前价格 {money(mid)}" if mid is not None else "当前价格暂不可用")
@@ -399,6 +421,8 @@ class HedgeMonitor(StrategyMonitor):
             )
         elif bot.state == BotState.READY:
             status, explanation = "尚未运行", "点击运行后等待价差条件。"
+        elif bot.reason.startswith("连接重试中"):
+            status, explanation = "连接重试中", bot.reason
         elif not loop_alive(market.last_tick):
             status, explanation = "后台监测状态待确认", "请查看程序运行状态。"
         elif positions:

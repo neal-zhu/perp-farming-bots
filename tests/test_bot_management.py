@@ -151,7 +151,8 @@ def test_bot_card_explains_funding_payment_directions(bot_page):
     assert "预计支付 0.0012%" in labels
     assert "预计收取 0.0012%" in labels
     assert "每小时" in labels
-    assert any("实际资金费尚未计入 Bot 盈亏" in s for s in labels)
+    assert not any("策略与数据详情" == s for s in labels)
+    assert not any(isinstance(e, ui.button) and e.text == "更多" for e in bot_page.elements.values())
 
 
 async def test_periodic_updates_preserve_bot_card_nodes_and_unsaved_form(bot_page):
@@ -190,14 +191,12 @@ async def test_bot_summary_shows_fee_deduction_and_explicit_unknown_without_rese
     pnl.update(gross="-0.004", net="-0.026", fees="0.022")
     card.update(configured_bot, store, pnl, funding)
     assert card.pnl["net"].text == "−$0.03"
-    assert card.pnl["gross"].text == "$0.00"
     assert card.pnl["fees"].text == "$0.02"
-    card.details.set_value(True)
     old_ids = set(bot_page.elements)
     pnl.update(net=None, fees=None, unavailable_reason="费用等待确认")
     card.update(configured_bot, store, pnl, funding)
     assert card.pnl["net"].text == card.pnl["fees"].text == "待确认"
-    assert card.details.value is True and set(bot_page.elements) == old_ids
+    assert set(bot_page.elements) == old_ids
 
 
 async def test_bot_card_keeps_unavailable_funding_visible(bot_page, configured_bot, env):
@@ -231,8 +230,7 @@ async def test_pending_orders_do_not_present_confirmed_volume_as_complete_total(
         configured_bot, store, await runtime.pnl(configured_bot.id), await runtime.funding(configured_bot.id)
     )
     assert card.turnover.text == "待确认"
-    assert "累计已确认成交额 $0.00" in card.confirmed_turnover.text
-    assert "未确认订单尚未计入" in card.confirmed_turnover.text
+    assert store.turnover(configured_bot.id)["confirmed_usd"] == "0"
 
 
 async def test_alert_polling_keeps_telegram_draft_and_existing_alert_nodes(bot_page, env):

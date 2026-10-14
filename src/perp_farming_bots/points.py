@@ -54,6 +54,8 @@ def scope_id(connection: Connection) -> str:
     return (
         f"arcus:{connection.address}"
         if connection.provider == Provider.ARCUS
+        else f"entropy:{connection.address}"
+        if connection.provider == Provider.ENTROPY
         else f"{connection.provider}:{connection.account_index}"
     )
 
@@ -246,6 +248,8 @@ class Points:
                 adapter = self.accounts.adapter(connection_id)
                 if not isinstance(adapter, Lighter):
                     raise ValueError("原生账户适配器不匹配")
+                if connection.account_index is None:
+                    raise ValueError("缺少 Lighter 原生账户编号")
                 token = await adapter.auth()
                 result = await self.request(
                     connection.provider, "/api/v1/livePoints/total", connection.account_index, token

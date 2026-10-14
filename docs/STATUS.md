@@ -4,7 +4,7 @@ Updated 2026-10-14 (Asia/Shanghai).
 
 ## Supported features
 
-- Multiple native account instances and multiple independent bots. Arcus, Lighter Core and Lighter Robinhood use distinct verified native identities.
+- Multiple native account instances and multiple independent bots. Arcus, Lighter Core, Lighter Robinhood and Entropy (Hyperliquid standard BTC/ETH/SOL markets) use distinct verified native identities.
 - Cross-account spread hedging, including different accounts on one venue. The second leg is sized from the first leg's confirmed fill.
 - Optional timed hedge reopening, with a durable random delay of up to five minutes and spread checks before each entry.
 - Fixed arithmetic perpetual grids in long, short and neutral directions. Price-triggered IOC execution requires the program to remain online.
@@ -13,10 +13,10 @@ Updated 2026-10-14 (Asia/Shanghai).
 - Per-bot allocated positions, real fills, confirmed turnover, trading PnL, fees and separate funding forecasts. Unknown values remain explicit.
 - Run, Pause and Close controls, parameter editing and confirmed deletion. Flat paused/closed grids can change strategy parameters. Historical execution fixes account/symbol bindings.
 - Original-order recovery after lost acknowledgements and restart, without automatic order resubmission or portfolio risk trading.
-- Temporary quote outages skip trading and retain the selected running state. Uncertain orders or partial inventory block new actions until resolved.
+- Transient quote, account, order-list and margin reads retain running authority and retry. Five minutes of continuous read failure pauses the bot and preserves positions. Uncertain orders or partial inventory block new actions until resolved.
 - Robinhood account points sampling every two minutes and 24-hour, seven-day and 30-day history curves. Missing samples remain gaps.
 - Persistent panels with local updates, inline form validation, in-app alerts and optional Telegram notifications. Saved grids explicitly show Ready and the Run action; ungenerated trigger lines are not presented as an initialization in progress.
-- Database format 8. Grid capital has one structure: investment, leverage and margin mode. Unsupported database/configuration formats fail explicitly; no conversion branches are included.
+- Database format 9. Grid capital has one structure: investment, leverage and margin mode. Unsupported database/configuration formats fail explicitly; no conversion branches are included.
 
 ## Validation
 
@@ -29,8 +29,11 @@ Run `make check` and `make test` to validate the current checkout. Public and au
 - Independent funded-order acceptance for each venue/profile.
 - Long-range paginated order/fill history and WebSocket reconciliation.
 - Bot-attributed funding payments and Lighter nonzero fee monetary accounting.
-- Arcus/Core account points integration.
+- Arcus/Core/Entropy account points integration.
+- Entropy unified/portfolio account modes, subaccounts and native HIP-3 instruments.
 - Additional exchange adapters, exchange-resting grids and scalping strategies.
 - Login/access design and packaging validation on additional platforms.
 
 The application uses one process and SQLite transactions. Cross-exchange fills are not atomic.
+
+Entropy uses hyperliquid-python-sdk 0.24.0 for signing only. Public BTC/ETH/SOL books and hourly funding were verified against mainnet read-only endpoints. Credential validation requires a registered, unexpired API agent belonging to the specified main account and existing Entropy builder approval; no wallet approvals are submitted by this application.

@@ -7,7 +7,7 @@ import pytest
 from perp_farming_bots.store import Store
 
 
-@pytest.mark.parametrize("version", [0, 1, 2, 3, 4, 5, 6, 7, 9])
+@pytest.mark.parametrize("version", [0, 1, 2, 3, 4, 5, 6, 7, 8, 10])
 def test_unsupported_database_is_rejected_without_rewriting_any_rows(tmp_path, version):
     path = tmp_path / "unsupported.db"
     with sqlite3.connect(path) as db:
@@ -29,7 +29,7 @@ def test_new_database_uses_current_format_and_reopens_without_conversion(tmp_pat
     reopened = Store(path)
     try:
         with reopened.engine.connect() as db:
-            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 8
+            assert db.exec_driver_sql("PRAGMA user_version").scalar_one() == 9
         assert reopened.bots() == []
     finally:
         reopened.close()

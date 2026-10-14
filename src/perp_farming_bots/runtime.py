@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from .grid import Grid, GridPreview
 from .margin import Margin
-from .markets import Markets, VenueRequestError, require_fresh_book
+from .markets import Markets, QuoteUnavailable, VenueRequestError, require_fresh_book
 from .models import (
     Bot,
     BotCreate,
@@ -33,6 +33,15 @@ from .store import Store, fills, operations, orders
 from .trading import Accounts
 
 logger = logging.getLogger(__name__)
+READ_OUTAGE_PAUSE_SECONDS = 300
+
+
+def transient_read(exc: Exception) -> bool:
+    return isinstance(exc, QuoteUnavailable) or (
+        isinstance(exc, VenueRequestError) and exc.retryable_read and exc.status_code != 404
+    )
+
+
 UNRESOLVED = {"prepared", "submitting", "submitted", "unknown"}
 
 
@@ -76,6 +85,26 @@ class Runtime:
         self.guard = asyncio.Lock()
         self.task: asyncio.Task[None] | None = None
         self.last_tick: float | None = None
+        self.read_outages: dict[str, float] = {}
+        self.account_read_outages: dict[str, float] = {}
+
+    def read_recovered(self, bot_id: str) -> None:
+        self.read_outages.pop(bot_id, None)
+
+    def retry_read(self, bot: Bot, exc: Exception) -> None:
+        """Only call before an order is journaled; never retry uncertain writes."""
+        now = time.time()
+        since = self.read_outages.setdefault(bot.id, now)
+        if now - since >= READ_OUTAGE_PAUSE_SECONDS:
+            self.store.set_state(bot.id, BotState.PAUSED, "连接或行情连续 5 分钟不可用，已暂停；持仓保留")
+            if bot.strategy == "spread_hedging":
+                self.store.disarm_reopen(bot.id)
+            self.store.alert(
+                f"{bot.name}：连续 5 分钟无法读取交易所，已暂停，请检查连接后运行", bot.id, "error"
+            )
+        else:
+            self.store.set_state(bot.id, bot.state, f"连接重试中：{exc}")
+            # Brief outages are visible on the card, without repeated action-required alerts.
 
     async def start(self) -> None:
         # No request is replayed on restart. Query originals; require operator review
@@ -105,7 +134,12 @@ class Runtime:
                     for account in self.store.connections():
                         try:
                             await self.accounts.refresh(account.id)
+                            self.account_read_outages.pop(account.id, None)
                         except ValueError as exc:
+                            if transient_read(exc):
+                                since = self.account_read_outages.setdefault(account.id, time.time())
+                                if time.time() - since < READ_OUTAGE_PAUSE_SECONDS:
+                                    continue
                             self.store.alert(f"{account.name}：{exc}", severity="warning")
                     for bot in self.store.bots():
                         await self.refresh_fees(bot.id)
@@ -213,8 +247,8 @@ class Runtime:
             self.markets.spec(long.provider, p.symbol),
             self.markets.spec(short.provider, p.symbol),
         )
-        if not long_book.fresh() or not short_book.fresh():
-            raise ValueError("行情已过期，暂不执行")
+        require_fresh_book(long_book)
+        require_fresh_book(short_book)
         quantity = quantity_floor(
             p.target_usd / long_book.asks[0].price,
             common_step(long_spec.quantity_step, short_spec.quantity_step),
@@ -274,6 +308,7 @@ class Runtime:
             return
         async with self.guard:
             bot = self.store.bot(bot_id)
+            self.read_recovered(bot_id)
             if bot.strategy == "grid":
                 await self.grid.command(bot, action)
                 return
@@ -358,10 +393,7 @@ class Runtime:
         if quantity_floor(quantity, spec.quantity_step) != quantity:
             raise ValueError("实际数量不符合该交易所精度，请在交易所处理残余数量")
         book = await self.markets.book(account.provider, bot.parameters.symbol, refresh=True)
-        if grid_bounds is not None:
-            require_fresh_book(book)
-        elif not book.fresh():
-            raise ValueError("盘口已过期")
+        require_fresh_book(book)
         if grid_bounds is not None:
             midpoint = (book.bids[0].price + book.asks[0].price) / 2
             if not grid_bounds[0] <= midpoint <= grid_bounds[1]:
@@ -381,7 +413,11 @@ class Runtime:
             price = min(price, trigger_price) if side == "buy" else max(price, trigger_price)
         if not reduce_only and (quantity < spec.min_quantity or quantity * price < spec.min_notional):
             raise ValueError("实际成交数量低于下一腿最小下单限制，保留持仓并告警")
-        client_id = uuid.uuid4().hex if account.provider == Provider.ARCUS else str(secrets.randbits(47))
+        client_id = (
+            uuid.uuid4().hex
+            if account.provider in {Provider.ARCUS, Provider.ENTROPY}
+            else str(secrets.randbits(47))
+        )
         intent = OrderIntent(
             connection_id=connection_id,
             symbol=bot.parameters.symbol,
@@ -462,6 +498,7 @@ class Runtime:
                 assert isinstance(preview, Preview)
                 self._direction_conflict(bot)
                 if preview.spread_pct < bot.parameters.threshold_pct:
+                    self.read_recovered(bot_id)
                     self.store.set_state(
                         bot_id,
                         BotState.WAITING,
@@ -473,6 +510,9 @@ class Runtime:
                     if self.accounts.snapshots[connection_id].available < bot.parameters.target_usd:
                         raise ValueError("账户可用抵押资产不足以覆盖单侧目标金额，请调整金额")
             except ValueError as exc:
+                if transient_read(exc):
+                    self.retry_read(bot, exc)
+                    return False
                 self.store.set_state(bot_id, BotState.WAITING, str(exc))
                 self.store.alert(str(exc), bot_id, "warning")
                 return False
@@ -501,6 +541,12 @@ class Runtime:
                 if second.quantity != first.quantity:
                     raise ValueError("两腿实际成交数量不匹配，需要处理；不会自动追加或止损")
             except Exception as exc:
+                if transient_read(exc) and not any(
+                    o["operation_id"] == op_id for o in self.store.bot_orders(bot.id)
+                ):
+                    self.store.skip_unsent_open(bot.id, op_id, str(exc))
+                    self.retry_read(bot, exc)
+                    return False
                 message = str(exc) if isinstance(exc, ValueError) else "执行失败，请同步原订单和实际持仓"
                 self.store.finish_operation(
                     op_id, "unknown" if self._unresolved(bot.id) else "attention", message
@@ -508,6 +554,7 @@ class Runtime:
                 self.store.set_state(bot.id, BotState.ATTENTION, message)
                 self.store.alert(message, bot.id, "error")
                 return False
+            self.read_recovered(bot.id)
             self.store.complete_open(
                 bot.id,
                 op_id,
@@ -553,8 +600,7 @@ class Runtime:
             for p in allocated:
                 account = self.store.connection(p.connection_id)
                 book = await self.markets.book(account.provider, p.symbol, refresh=True)
-                if not book.fresh():
-                    raise ValueError("平仓报价已过期")
+                require_fresh_book(book)
                 references[p.role] = book.vwap("sell" if p.role == "long" else "buy", p.quantity)
             for p in allocated:
                 await self._execute(
@@ -570,6 +616,16 @@ class Runtime:
             if self.store.positions(bot.id):
                 raise ValueError("本次平仓未完全成交，保留剩余分配数量，可再次点击平仓")
         except Exception as exc:
+            if transient_read(exc) and not any(
+                o["operation_id"] == op_id for o in self.store.bot_orders(bot.id)
+            ):
+                self.store.finish_operation(op_id, "skipped", str(exc))
+                if reopen:
+                    self.retry_read(bot, exc)
+                else:
+                    self.store.set_state(bot.id, BotState.PAUSED, f"平仓未提交，连接暂不可用：{exc}")
+                    self.store.alert(f"{bot.name}：平仓未提交，请连接恢复后再次平仓", bot.id, "warning")
+                return
             message = str(exc) if isinstance(exc, ValueError) else "平仓执行失败，请同步订单"
             self.store.finish_operation(
                 op_id, "unknown" if self._unresolved(bot.id) else "attention", message
@@ -578,6 +634,7 @@ class Runtime:
             self.store.disarm_reopen(bot.id)
             self.store.alert(message, bot.id, "error")
             return
+        self.read_recovered(bot.id)
         if reopen:
             assert isinstance(bot.parameters, HedgeParameters)
             wait = secrets.randbelow(bot.parameters.reopen_random_wait_seconds + 1)

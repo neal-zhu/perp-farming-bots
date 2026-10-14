@@ -5,6 +5,7 @@ This repository now includes independently written application code, tests and p
 | Upstream | Role | Verified license | Intended use |
 | --- | --- | --- | --- |
 | [elliottech/lighter-python](https://github.com/elliottech/lighter-python) | Lighter/RH public SDK | Apache-2.0 source LICENSE | Installed pinned native signing SDK; real-order code path, not funded-order certified |
+| [hyperliquid-dex/hyperliquid-python-sdk](https://github.com/hyperliquid-dex/hyperliquid-python-sdk) | Entropy mainnet EIP-712 action signing | MIT, official LICENSE.md | PyPI 0.24.0 pinned; signing only, HTTP submits through the existing durable journal |
 | [ccxt/ccxt](https://github.com/ccxt/ccxt) | Other REST/WS connectors | MIT | Evaluated for later adapters; not currently a runtime dependency |
 | [sethmlarson/truststore](https://github.com/sethmlarson/truststore) | OS certificate trust | MIT | Explicit HTTPX SSLContext |
 | [python-websockets/websockets](https://github.com/python-websockets/websockets) | Read-only native funding stream | BSD-3-Clause | Short public market_stats subscriptions with verified TLS |
@@ -29,3 +30,7 @@ Points protocol evidence is recorded in [docs/research/points.md](docs/research/
 ## Grid source reuse (2026-10-13)
 
 Hummingbot commit `9af100d6822da7d2d0291a906c730ef172284ee2`, original `hummingbot/strategy_v2/utils/distributions.py::Distributions.linear`, is adapted in `src/perp_farming_bots/hummingbot_grid.py`. Changes: Decimal-only inputs, invalid-input rejection, isolated function and formatting. The original Apache-2.0 LICENSE and local attribution are in `third_party/hummingbot/`, included in wheel and Docker packaging. GridExecutor is an architectural reference, not an imported executor or a claim of equivalent venue acceptance. Detailed reviewed sources and differences: [grid research](docs/research/grid.md).
+
+## Entropy protocol integration (2026-10-14)
+
+See [Entropy evidence](docs/research/entropy.md). The official frontend and public market API were inspected for native market identity, builder address and fee settings; no frontend implementation was copied. Orders explicitly use Entropy’s builder code with zero added builder fee. No app-owned builder, referral code, wallet transfer, agent creation or approval action is submitted. The official SDK is used as a dependency for `sign_l1_action`; its HTTP client and optional builder defaults are not used.

@@ -163,7 +163,7 @@ async def test_repeated_stale_reads_deduplicate_notifications_and_pause_prevents
     prices["stale"] = True
     for _ in range(3):
         assert not await runtime.grid.tick(bot.id)
-    assert len(store.rows(alerts, bot.id)) == 1
+    assert len(store.rows(alerts, bot.id)) == 0
     await runtime.command(bot.id, "pause")
     prices.update(stale=False, bid=Decimal("58999"), ask=Decimal("58999.5"))
     assert not await runtime.grid.tick(bot.id)

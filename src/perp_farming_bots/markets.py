@@ -18,6 +18,7 @@ from .models import PROVIDER_NAMES, Book, FundingSnapshot, Level, MarketSpec, Pr
 
 HOSTS = {
     Provider.ARCUS: "https://api.arcus.xyz",
+    Provider.ENTROPY: "https://api.hyperliquid.xyz",
     Provider.LIGHTER: "https://mainnet.zklighter.elliot.ai",
     Provider.LIGHTER_RH: "https://api.rh.lighter.xyz",
 }
@@ -106,7 +107,7 @@ class Markets:
         if provider not in HOSTS:
             raise ValueError("该交易所接入尚未完成")
         method = method.upper()
-        read = method == "GET"
+        read = method == "GET" or (provider == Provider.ENTROPY and method == "POST" and path == "/info")
         attempts = 0
         started = time.monotonic()
         first_failure = ""
@@ -164,14 +165,21 @@ class Markets:
     async def request(self, provider: Provider, method: str, path: str, **kwargs) -> Any:
         response = await self.request_response(provider, method, path, **kwargs)
         result = response.json()
-        if provider != Provider.ARCUS and result.get("code") != 200:
+        if provider in {Provider.LIGHTER, Provider.LIGHTER_RH} and result.get("code") != 200:
             raise ValueError(f"{PROVIDER_NAMES[provider]} 返回非成功状态")
         return result
+
+    async def entropy_info(self, kind: str, **payload) -> Any:
+        return await self.request(Provider.ENTROPY, "POST", "/info", json={"type": kind, **payload})
 
     async def catalog(self, provider: Provider) -> list[str]:
         if provider not in self.catalogs:
             catalog: dict[str, MarketSpec] = {}
-            if provider == Provider.ARCUS:
+            if provider == Provider.ENTROPY:
+                from .entropy import entropy_catalog
+
+                catalog = await entropy_catalog(self)
+            elif provider == Provider.ARCUS:
                 response = await self.request(provider, "GET", "/v1/markets")
                 for m in response["markets"]:
                     if m["type"] != "PERPETUAL" or m["status"] != "ONLINE" or m["category"] != "CRYPTO":
@@ -227,7 +235,14 @@ class Markets:
         try:
             async with self.locks.setdefault(key, asyncio.Lock()):
                 spec = await self.spec(provider, symbol)
-                if provider == Provider.ARCUS:
+                if provider == Provider.ENTROPY:
+                    r = await self.entropy_info("l2Book", coin=spec.native_symbol)
+                    if r["coin"] != spec.native_symbol:
+                        raise ValueError("Entropy 盘口市场身份不匹配")
+                    bids = [(x["px"], x["sz"]) for x in r["levels"][0]]
+                    asks = [(x["px"], x["sz"]) for x in r["levels"][1]]
+                    received_at = r["time"] / 1000
+                elif provider == Provider.ARCUS:
                     r = await self.request(
                         provider, "GET", f"/v1/l2OrderBook/{spec.native_symbol}", params={"nLevels": 20}
                     )
@@ -266,6 +281,10 @@ class Markets:
             raise
 
     async def _funding_data(self, provider: Provider, spec: MarketSpec) -> dict[str, Any]:
+        if provider == Provider.ENTROPY:
+            from .entropy import entropy_funding
+
+            return await entropy_funding(self, spec)
         if provider == Provider.ARCUS:
             response = await self.request(provider, "GET", "/v1/markets")
             matches = [m for m in response["markets"] if m["marketId"] == spec.market_id]
