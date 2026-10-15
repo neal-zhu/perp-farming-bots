@@ -667,7 +667,7 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         help_label.set_text(
                             "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
                             if is_arcus
-                            else "Entropy：使用交易账户地址与 Hyperliquid API 代理私钥。先在 Entropy 官网完成交易授权；支持主市场和 io 合约。请勿填写主钱包私钥。"
+                            else "Entropy：使用交易账户地址与 Hyperliquid API 代理私钥。先在 Entropy 官网完成交易授权；支持标准和统一账户，暂不支持组合保证金。请勿填写主钱包私钥。"
                             if is_entropy
                             else "Ondo Perps：在 API Keys 创建 View & Trade 密钥，填写完整 Key ID 与 Secret（保留前缀）。验证后自动识别账户；无需钱包私钥。"
                             if is_ondo
@@ -779,8 +779,9 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                         if view["error"]:
                             ui.label(view["error"]).classes("text-amber-800")
                         if snapshot is not None:
+                            equity_label = "USDC 抵押余额" if account.provider == Provider.ENTROPY else "账户资产"
                             ui.label(
-                                f"可用抵押资产 {money(snapshot['available'])} · 账户资产 {money(snapshot['equity'])}"
+                                f"可用抵押资产 {money(snapshot['available'])} · {equity_label} {money(snapshot['equity'])}"
                             )
                             ui.label(f"上次读取：{stamp(snapshot['received_at'])}").classes(
                                 "text-xs text-slate-500"

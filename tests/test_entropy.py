@@ -112,11 +112,26 @@ async def entropy():
         key = payload["type"] + ("_io" if payload.get("dex") == "io" and payload["type"] in {
             "meta", "clearinghouseState", "openOrders", "metaAndAssetCtxs"
         } else "")
-        return httpx.Response(200, json=data[key])
+        return httpx.Response(200, content=json.dumps(data[key]), headers={"Content-Type": "application/json"})
 
     markets.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     yield markets, adapter, data, calls
     await markets.close()
+
+
+@pytest.fixture
+def unified(entropy):
+    _, _, data, _ = entropy
+    data["userAbstraction"] = "unifiedAccount"
+    data["spotClearinghouseState"] = {
+        "balances": [
+            {"coin": "USDC", "token": 0, "total": "1000.50", "hold": "50.10"},
+            {"coin": "HYPE", "token": 150, "total": "500", "hold": "0"},
+        ],
+        "tokenToAvailableAfterMaintenance": [[150, "500"], [0, "900"]],
+    }
+    data["activeAssetData"]["availableToTrade"] = ["800", "700"]
+    return entropy
 
 
 def intent():
@@ -145,8 +160,94 @@ async def test_connect_only_reads_and_verifies_agent_owner_expiry_and_builder(en
         await adapter.validate()
 
 
-async def test_foreign_agent_main_wallet_and_unverified_account_modes_are_rejected(entropy, monkeypatch):
-    markets, adapter, data, _ = entropy
+async def test_unified_account_connects_using_shared_spot_usdc_without_dex_double_counting(unified):
+    _, adapter, data, calls = unified
+    for key, coin in [("clearinghouseState", "BTC"), ("clearinghouseState_io", "io:OAI")]:
+        data[key]["withdrawable"] = None  # Not meaningful under unified account.
+        data[key]["marginSummary"]["accountValue"] = None
+        data[key]["assetPositions"] = [{"position": {
+            "coin": coin, "szi": "0.1", "entryPx": "1500", "unrealizedPnl": "2"
+        }}]
+    snapshot = await adapter.validate()
+    assert snapshot.equity == Decimal("1000.50")
+    assert snapshot.available == Decimal("900")
+    assert {p.symbol for p in snapshot.positions} == {"BTC", "io:OAI"}
+    assert "USDC" in snapshot.source
+    assert all(path == "/info" for path, _ in calls)
+
+
+@pytest.mark.parametrize("symbol", ["BTC", "io:OAI"])
+async def test_unified_budget_uses_native_market_allowance_and_shared_collateral(unified, symbol):
+    _, adapter, data, calls = unified
+    data["activeAssetData"]["coin"] = symbol
+    assert await adapter.available(symbol) == Decimal("700")
+    assert calls[-1][1]["coin"] == symbol
+    data["spotClearinghouseState"]["balances"][0]["hold"] = "600"
+    assert await adapter.available(symbol) == Decimal("400.50")
+    data["spotClearinghouseState"]["tokenToAvailableAfterMaintenance"][1][1] = "300"
+    assert await adapter.available(symbol) == Decimal("300")
+    data["activeAssetData"]["user"] = "0x" + "33" * 20
+    with pytest.raises(ValueError, match="身份"):
+        await adapter.available(symbol)
+    assert all(path == "/info" for path, _ in calls)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("balances", []),
+    ("balances", [{"coin": "USDC", "token": 1, "total": "1000", "hold": "0"}]),
+    ("balances", [{"coin": "FAKE", "token": 0, "total": "1000", "hold": "0"}]),
+    ("balances", [{"coin": "USDC", "token": False, "total": "1000", "hold": "0"}]),
+    ("balances", [{"coin": "USDC", "token": 0, "total": "NaN", "hold": "0"}]),
+    ("balances", [{"coin": "USDC", "token": 0, "total": "1000", "hold": "-1"}]),
+    ("balances", [{"coin": "USDC", "token": 0, "total": "1000", "hold": "0"}] * 2),
+    ("tokenToAvailableAfterMaintenance", []),
+    ("tokenToAvailableAfterMaintenance", [[0, "900"], [0, "900"]]),
+    ("tokenToAvailableAfterMaintenance", [[0, None]]),
+    ("tokenToAvailableAfterMaintenance", [[0, "Infinity"]]),
+    ("tokenToAvailableAfterMaintenance", [[0, "invalid"]]),
+    ("tokenToAvailableAfterMaintenance", None),
+])
+async def test_unified_unknown_collateral_never_uses_legacy_perp_balances(unified, field, value):
+    _, adapter, data, _ = unified
+    data["spotClearinghouseState"][field] = value
+    with pytest.raises(ValueError, match="USDC 余额或可用额度未确认"):
+        await adapter.validate()
+    with pytest.raises(ValueError, match="USDC 余额或可用额度未确认"):
+        await adapter.available("BTC")
+
+
+async def test_unified_missing_limits_and_mode_changes_remain_explicit(unified):
+    _, adapter, data, _ = unified
+    del data["spotClearinghouseState"]["tokenToAvailableAfterMaintenance"]
+    with pytest.raises(ValueError, match="未确认"):
+        await adapter.snapshot()
+    data["spotClearinghouseState"]["portfolioMarginEnabled"] = True
+    with pytest.raises(ValueError, match="组合保证金"):
+        await adapter.snapshot()
+
+
+@pytest.mark.parametrize("limits", [None, [], ["100"], ["100", None], ["100", "NaN"]])
+async def test_unified_missing_asset_limits_do_not_reuse_global_or_perp_balance(unified, limits):
+    _, adapter, data, _ = unified
+    data["activeAssetData"]["availableToTrade"] = limits
+    with pytest.raises(ValueError, match="未确认|金额"):
+        await adapter.available("BTC")
+
+
+@pytest.mark.parametrize("mode,message", [
+    ("portfolioMargin", "组合保证金"), ("futureMode", "无法识别账户模式"),
+    (None, "无法识别账户模式"), ({"unexpected": True}, "无法识别账户模式"),
+])
+async def test_unsupported_account_modes_are_identified_without_mode_changes(entropy, mode, message):
+    _, adapter, data, calls = entropy
+    data["userAbstraction"] = mode
+    with pytest.raises(ValueError, match=message):
+        await adapter.validate()
+    assert all(path == "/info" for path, _ in calls)
+
+
+async def test_foreign_agent_and_main_wallet_keys_are_rejected(entropy, monkeypatch):
+    markets, adapter, _, _ = entropy
     original = markets.entropy_info
 
     async def wrong_owner(kind, **payload):
@@ -159,9 +260,6 @@ async def test_foreign_agent_main_wallet_and_unverified_account_modes_are_reject
     monkeypatch.setattr(markets, "entropy_info", wrong_owner)
     with pytest.raises(ValueError, match="未授权"):
         await adapter.validate()
-    data["userAbstraction"] = "unifiedAccount"
-    with pytest.raises(ValueError, match="统一账户"):
-        await adapter.snapshot()
     with pytest.raises(ValueError, match="未授权"):
         main_key = Entropy(
             adapter.value.model_copy(update={"api_private_key": SecretStr("11" * 32)}), markets

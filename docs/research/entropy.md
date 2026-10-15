@@ -1,6 +1,6 @@
 # Entropy native integration
 
-Verified 2026-10-14 from primary sources; no private repository artifacts used.
+Verified 2026-10-15 from primary sources; no private repository artifacts used.
 
 - [Official Entropy](https://entropy.io) and its [public market catalog](https://entropy.io/api/markets?scope=all): BTC, ETH and SOL are Hyperliquid default-DEX markets, native asset IDs 0, 1 and 5. Entropy `io:*` instruments are distinct HIP-3 contracts. The adapter reads all active main and `io` markets; qualified names are retained.
 - Official frontend `assets/builder-D2NcoSIw.js`: builder `0xcD254d2A328f7f67C7c6FEf930A4757516F7b601`, added builder fee `0`. This is explicit configuration; it does not authorize future fee increases. The frontend configuration uses mainnet `https://api.hyperliquid.xyz`. No frontend code was copied.
@@ -13,7 +13,17 @@ Verified 2026-10-14 from primary sources; no private repository artifacts used.
 
 ## Account and recovery scope
 
-The supplied address must be the main trading account. The supplied private key must be an approved, unexpired API agent belonging to that account; main-wallet keys are rejected. No subaccount or vault inference is performed. Standard accounts read the selected DEX’s collateral. DEX-abstraction uses the main USDC perpetual collateral source for io trades, following the native protocol’s existing abstraction setting; unified/portfolio margin is rejected explicitly until its balance and collateral semantics are implemented.
+The supplied address must be the main trading account. The supplied private key must be an approved, unexpired API agent belonging to that account; main-wallet keys are rejected. No subaccount or vault inference is performed. Standard accounts read the selected DEX’s collateral. DEX-abstraction uses the main USDC perpetual collateral source for io trades, following the native protocol’s existing abstraction setting.
+
+### Unified accounts
+
+[Official account-mode documentation](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/account-abstraction-modes) and the [spot balance endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/spot) identify `spotClearinghouseState` as the balance source for unified accounts. Per-DEX `withdrawable` and `marginSummary.accountValue` are not meaningful in this mode and are not parsed or added. Main and io states still supply their native positions and freshness checks.
+
+For the supported USDC-collateral markets, the adapter requires exactly one canonical token-0 USDC balance and one token-0 `tokenToAvailableAfterMaintenance` entry. It reports the native USDC total as collateral balance, without adding other spot assets or DEX totals. Shared availability is conservatively bounded by both `total - hold` and the native after-maintenance allowance. A contract budget is further bounded by the smaller of the two native `activeAssetData.availableToTrade` entries, after checking account and full native ticker identity. The common budget interface has no order side; using the smaller allowance can reject a budget that is available in only one direction. Missing, duplicated or invalid native fields fail explicitly; there is no fallback to legacy perp balances or zero.
+
+The current spot response's additional fields were cross-checked against the [public TypeScript SDK schema](https://github.com/nktkas/hyperliquid/blob/main/src/api/info/_methods/spotClearinghouseState.ts) (schema reference only; no source copied or dependency added). Official `activeAssetData` examples document the two available-to-trade values. Public read probes confirmed the info endpoints' connectivity and native identity shape, but did not validate a funded unified account. Offline tests cover unified onboarding, native positions, shared collateral, selected-market allowances and missing/invalid evidence.
+
+[Portfolio margin](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/portfolio-margin) is a different mode involving eligible collateral, borrowing and account-level requirements. It remains explicitly unsupported; unknown modes are reported separately. The application never changes account mode or submits collateral transfers.
 
 Margin leverage/mode is read through `activeAssetData`, including flat markets. Setting it uses the shared journaled margin workflow and native read-back confirmation. Position margin is explicitly unknown when this response does not supply it; no guessed zero is presented.
 

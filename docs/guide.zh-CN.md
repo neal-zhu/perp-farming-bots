@@ -38,7 +38,7 @@
 | Entropy | 主交易账户地址、已授权的 API 代理私钥 | 先在 [Entropy](https://entropy.io) 完成交易授权，再在 [Hyperliquid API](https://app.hyperliquid.xyz/API) 创建有名称的代理 |
 | Ondo Perps | API Key ID、API Secret（保留原始前缀） | 在 [Ondo API Keys](https://app.ondoperps.xyz/account/api-keys) 创建 **View & Trade** 密钥；验证时自动识别账户 |
 
-点击“验证并连接账户”后，程序先读取原生账户并检查授权，通过后才保存。这里使用交易 API 密钥，不填写钱包助记词或主钱包私钥。Lighter 的 Core 与 Robinhood 凭据不能互换。Entropy 支持主市场和 `io:*` 合约，暂不支持统一/组合保证金、子账户和 Vault。
+点击“验证并连接账户”后，程序先读取原生账户并检查授权，通过后才保存。这里使用交易 API 密钥，不填写钱包助记词或主钱包私钥。Lighter 的 Core 与 Robinhood 凭据不能互换。Entropy 支持主市场和 `io:*` 合约，可连接标准账户和统一账户（Unified Account），暂不支持组合保证金（Portfolio Margin）、子账户和 Vault。统一账户显示的是可用于这些合约的 USDC 抵押余额，不包含其他现货资产；余额或可用额度无法确认时会提示重试。
 
 账户实例代表真实账户身份。给同一原生账户换 API key 不会形成第二个独立账户。完整的身份定义和能力范围见 [交易所接入](exchanges.md)。
 

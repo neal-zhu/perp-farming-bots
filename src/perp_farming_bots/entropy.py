@@ -32,7 +32,7 @@ from .trading import Adapter
 # Zero added builder fee. Do not silently raise this if the website changes.
 ENTROPY_BUILDER = "0xcd254d2a328f7f67c7c6fef930a4757516f7b601"
 ENTROPY_BUILDER_FEE = 0
-ALLOWED_ACCOUNT_MODES = {"default", "disabled", "dexAbstraction"}
+ALLOWED_ACCOUNT_MODES = {"default", "disabled", "dexAbstraction", "unifiedAccount"}
 CANCELED = {
     "canceled",
     "marginCanceled",
@@ -180,15 +180,24 @@ class Entropy(Adapter):
 
     async def check_mode(self) -> str:
         mode = await self.markets.entropy_info("userAbstraction", user=self.value.address)
-        if mode not in ALLOWED_ACCOUNT_MODES:
-            raise ValueError("Entropy 统一账户或组合保证金模式暂未支持，无法确认可用保证金")
+        if mode == "portfolioMargin":
+            raise ValueError(
+                "Entropy 此账户启用了组合保证金（Portfolio Margin），当前暂不支持。"
+                "支持标准账户和普通统一账户（Unified Account）。"
+            )
+        if not isinstance(mode, str) or mode not in ALLOWED_ACCOUNT_MODES:
+            raise ValueError(f"Entropy 无法识别账户模式 {mode!r}，请更新程序后重试")
         return mode
 
-    async def dex_snapshot(self, dex: str) -> AccountSnapshot:
+    async def dex_state(self, dex: str) -> dict[str, Any]:
         data = await self.markets.entropy_info("clearinghouseState", user=self.value.address, dex=dex)
         received_at = data["time"] / 1000
         if not 0 <= time.time() - received_at <= 30:
             raise ValueError("Entropy 账户快照时间无效或已过期")
+        return data
+
+    @staticmethod
+    def positions(data: dict[str, Any], dex: str) -> list[NativePosition]:
         positions = []
         for entry in data["assetPositions"]:
             p = entry["position"]
@@ -204,18 +213,57 @@ class Entropy(Adapter):
                         unrealized_pnl=number(p["unrealizedPnl"]),
                     )
                 )
+        return positions
+
+    async def dex_snapshot(self, dex: str) -> AccountSnapshot:
+        data = await self.dex_state(dex)
         return AccountSnapshot(
             available=number(data["withdrawable"]),
             equity=number(data["marginSummary"]["accountValue"]),
-            positions=positions,
-            received_at=received_at,
+            positions=self.positions(data, dex),
+            received_at=data["time"] / 1000,
             source="Entropy / Hyperliquid 原生账户",
         )
+
+    async def unified_collateral(self) -> tuple[Decimal, Decimal, float]:
+        data = await self.markets.entropy_info("spotClearinghouseState", user=self.value.address)
+        if data.get("portfolioMarginEnabled") is True:
+            raise ValueError("Entropy 账户已启用组合保证金，当前暂不支持")
+        try:
+            balances = [row for row in data["balances"] if row.get("token") == 0]
+            limits = [row for row in data["tokenToAvailableAfterMaintenance"] if row[0] == 0]
+            if (
+                len(balances) != 1 or balances[0]["coin"] != "USDC"
+                or type(balances[0]["token"]) is not int
+                or len(limits) != 1 or len(limits[0]) != 2 or type(limits[0][0]) is not int
+            ):
+                raise ValueError("USDC identity")
+            equity = number(balances[0]["total"])
+            hold = number(balances[0]["hold"])
+            available = number(limits[0][1])
+            if hold < 0:
+                raise ValueError("negative hold")
+        except (KeyError, TypeError, IndexError, ValueError, ArithmeticError) as exc:
+            raise ValueError("Entropy 统一账户的 USDC 余额或可用额度未确认，请稍后重试") from exc
+        # Both bounds are native spot state: do not add DEX account values or
+        # treat other assets as USDC collateral. Missing fields must not use the
+        # legacy perp withdrawable path, which is meaningless in unified mode.
+        return equity, min(equity - hold, available), time.time()
 
     async def snapshot(self) -> AccountSnapshot:
         mode = await self.check_mode()
         symbols = await self.markets.catalog(Provider.ENTROPY)
         dexs = sorted({""} | {market_dex(symbol) for symbol in symbols})
+        if mode == "unifiedAccount":
+            equity, available, received_at = await self.unified_collateral()
+            states = await asyncio.gather(*(self.dex_state(dex) for dex in dexs))
+            return AccountSnapshot(
+                available=available,
+                equity=equity,
+                positions=[p for dex, state in zip(dexs, states) for p in self.positions(state, dex)],
+                received_at=min(received_at, *(state["time"] / 1000 for state in states)),
+                source="Entropy / Hyperliquid 统一账户 USDC 抵押余额 · main + io 仓位",
+            )
         snapshots = await asyncio.gather(*(self.dex_snapshot(dex) for dex in dexs))
         return AccountSnapshot(
             available=snapshots[0].available if mode == "dexAbstraction" else sum(
@@ -230,6 +278,15 @@ class Entropy(Adapter):
     async def available(self, symbol: str) -> Decimal:
         mode = await self.check_mode()
         spec = await self.markets.spec(Provider.ENTROPY, symbol)
+        if mode == "unifiedAccount":
+            _, collateral, _ = await self.unified_collateral()
+            data = await self.active_asset(spec.native_symbol)
+            limits = data.get("availableToTrade")
+            if not isinstance(limits, list) or len(limits) != 2:
+                raise ValueError("Entropy 统一账户的合约可用保证金未确认，请稍后重试")
+            # The shared budget interface has no side: use the smaller native
+            # buy/sell allowance, bounded by the shared USDC collateral once.
+            return min(collateral, *(number(limit) for limit in limits))
         dex = market_dex(spec.native_symbol)
         # DEX abstraction draws collateral from the main account. Default and
         # disabled abstraction keep their collateral in separate native domains.
@@ -363,9 +420,7 @@ class Entropy(Adapter):
     async def margin(self, symbol: str) -> MarginSnapshot:
         spec = await self.markets.spec(Provider.ENTROPY, symbol)
         rules = await market_rules(self.markets, spec)
-        data = await self.markets.entropy_info("activeAssetData", user=self.value.address, coin=symbol)
-        if data["user"].lower() != self.value.address or data["coin"] != symbol:
-            raise ValueError("Entropy 保证金账户或市场身份不符")
+        data = await self.active_asset(spec.native_symbol)
         settings = data["leverage"]
         if settings["type"] not in {"cross", "isolated"}:
             raise ValueError("Entropy 原生保证金模式无效")
@@ -378,6 +433,12 @@ class Entropy(Adapter):
             received_at=time.time(),
             source="Entropy / Hyperliquid 原生保证金设置",
         )
+
+    async def active_asset(self, symbol: str) -> dict[str, Any]:
+        data = await self.markets.entropy_info("activeAssetData", user=self.value.address, coin=symbol)
+        if data["user"].lower() != self.value.address or data["coin"] != symbol:
+            raise ValueError("Entropy 保证金账户或市场身份不符")
+        return data
 
     async def prepare_margin(self, symbol: str, capital: GridMarginCapital) -> dict[str, Any]:
         spec = await self.markets.spec(Provider.ENTROPY, symbol)
