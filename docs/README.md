@@ -5,6 +5,7 @@ User-facing onboarding is in Simplified Chinese, matching the current web interf
 | Task | Start here |
 | --- | --- |
 | Install and connect an account | [中文快速开始](../README.zh-CN.md), [使用指南](guide.zh-CN.md) |
+| Create trading API keys and fill the connection form | [API 配置图文指南](api-setup.zh-CN.md) |
 | Understand supported venues and points | [Exchange scope](exchanges.md) |
 | Configure, back up or restart an instance | [Operations](operations.md) |
 | Understand a bot and its ownership | [Bot model](BOTS.md) |

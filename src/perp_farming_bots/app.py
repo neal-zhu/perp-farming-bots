@@ -7,6 +7,7 @@ from pathlib import Path
 
 from nicegui import app, ui
 
+from .account_guide import install_account_guide
 from .api import register_routes
 from .markets import Markets
 from .notifications import Notifications
@@ -36,6 +37,7 @@ def main() -> None:
     runtime = Runtime(store, markets, accounts)
     notifications = Notifications(store, secrets)
     register_routes(app, store, runtime, notifications)
+    install_account_guide()
     install_ui(store, runtime, notifications)
 
     async def startup():

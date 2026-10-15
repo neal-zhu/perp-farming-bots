@@ -8,6 +8,7 @@ import pytest
 from nicegui import background_tasks, core, ui
 from nicegui.client import Client
 
+from perp_farming_bots.models import TRADING_PROVIDERS
 from perp_farming_bots.notifications import Notifications
 from perp_farming_bots.ui import install_ui
 
@@ -56,6 +57,26 @@ def test_reopening_connection_form_keeps_one_form_and_entered_name(page):
     assert len(name_inputs(page)) == 1
     assert name_inputs(page)[0].value == "Arcus 账户 1"
     assert sum(isinstance(e, ui.dialog) for e in page.elements.values()) == 1
+
+
+async def test_api_help_targets_the_selected_venue_and_keeps_the_connection_draft(page):
+    click(page, "连接账户")
+    name = name_inputs(page)[0]
+    name.set_value("我的交易账户")
+    selector = next(e for e in page.elements.values() if isinstance(e, ui.select) and e.label == "交易所")
+    help_link = next(e for e in page.elements.values() if isinstance(e, ui.link) and e.text == "查看 API 配置图文指南 ↗")
+    for provider in TRADING_PROVIDERS:
+        selector.set_value(provider.value)
+        assert help_link.props["href"] == f"/help/api?provider={provider.value}"
+        assert help_link.props["target"] == "_blank"
+        assert name.value == "我的交易账户"
+    # Refreshing account data must not discard the form or its help destination.
+    tabs = next(e for e in page.elements.values() if isinstance(e, ui.tabs))
+    accounts = next(e for e in page.elements.values() if isinstance(e, ui.tab) and e.props["name"] == "账户实例")
+    tabs.set_value(accounts)
+    await page.test_refresh()
+    assert help_link.id in page.elements
+    assert name.value == "我的交易账户"
 
 
 async def test_empty_name_is_inline_and_does_not_validate_exchange_key(page, env, monkeypatch):

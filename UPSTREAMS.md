@@ -23,6 +23,18 @@ If public code is copied rather than imported as a dependency, append its exact 
 
 SDK-provided referral/builder/integrator defaults are reviewed separately from code licenses. The product must not add hidden referral links or fees. Disable optional defaults explicitly; where their absence cannot be verified, do not certify that adapter for live execution.
 
+## Public onboarding screenshots (2026-10-16)
+
+The images under `src/perp_farming_bots/assets/api-guide/` are cropped browser captures of the official unauthenticated pages below, used only to explain navigation. They contain no connected wallet, user account, key, credential or funded account state. No wallet login, key generation or authorization was performed to obtain them. Images and venue branding remain the respective site's material; the application license does not claim ownership of them. UI examples and instructions are independently written; no frontend implementation was copied.
+
+| File | Public source |
+| --- | --- |
+| `arcus-api.jpg` | [Arcus API Keys](https://app.arcus.xyz/api-keys) |
+| `lighter-core-api.jpg` | [Core API Keys](https://app.lighter.xyz/apikeys) |
+| `lighter-robinhood-api.jpg` | [Robinhood API Keys](https://robinhoodchain.lighter.xyz/apikeys) |
+| `hyperliquid-api.jpg` | [Hyperliquid API](https://app.hyperliquid.xyz/API), used for Entropy API agents |
+| `ondo-api-entry.jpg` | [Ondo account overview](https://app.ondoperps.xyz/account/overview), the unauthenticated destination of the API Keys link |
+
 The Lighter source LICENSE is Apache-2.0, while the pinned pyproject metadata labels its license as NoLicense. This discrepancy is recorded rather than silently treating package metadata as a license grant; source LICENSE and any native artifact notices need to be retained for distribution. Current application uses the native signer to prepare user-selected orders, and independently submits journaled native requests. No referral or integrator write function is called. Arcus signing is independently implemented from the official protocol documentation; its spot SDK supplies no perpetual execution code.
 
 Points protocol evidence is recorded in [docs/research/points.md](docs/research/points.md). Official API definitions and Arcus's publicly served frontend were inspected only to establish endpoint and authorization semantics. No frontend source was copied or vendored. Points statistics use read-only endpoints; no referral registration, reward claim or program enrollment is performed.

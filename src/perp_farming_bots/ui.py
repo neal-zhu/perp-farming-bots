@@ -9,6 +9,7 @@ from nicegui import ui
 from nicegui.elements.mixins.disableable_element import DisableableElement
 from pydantic import SecretStr, ValidationError
 
+from .account_guide import GUIDE_URL, guide_url
 from .bot_styles import BOT_STYLES
 from .bot_widgets import AlertFeed, BotCard
 from .formatting import money, stamp
@@ -644,16 +645,15 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
                     help_label = ui.label(
                         "Arcus：填写 API Keys 页面显示的 API Signing Key 和 Subaccount #。"
                     ).classes("text-sm text-slate-500")
-                    ui.link("Entropy", "https://entropy.io", new_tab=True)
-                    ui.link("Hyperliquid API 代理", "https://app.hyperliquid.xyz/API", new_tab=True)
-                    ui.link("Arcus API Keys", "https://app.arcus.xyz/api-keys", new_tab=True)
-                    ui.link("Lighter Robinhood", "https://robinhoodchain.lighter.xyz/apikeys", new_tab=True)
-                    ui.link("Ondo Perps API Keys", "https://app.ondoperps.xyz/account/api-keys", new_tab=True)
+                    api_help = ui.link("查看 API 配置图文指南 ↗", guide_url(provider.value), new_tab=True).classes(
+                        "text-emerald-700 text-sm font-semibold"
+                    ).props('rel="noopener noreferrer"')
 
                     def change_provider():
                         is_arcus = provider.value == Provider.ARCUS.value
                         is_entropy = provider.value == Provider.ENTROPY.value
                         is_ondo = provider.value == Provider.ONDO.value
+                        api_help.props["href"] = guide_url(provider.value)
                         wallet.set_visibility(is_arcus or is_entropy)
                         index.set_visibility(not is_entropy and not is_ondo)
                         key_index.set_visibility(not is_arcus and not is_entropy and not is_ondo)
@@ -760,7 +760,11 @@ def install_ui(store: Store, runtime: Runtime, notifications: Notifications) -> 
             async def accounts_view():
                 with ui.row().classes("w-full justify-between"):
                     ui.label("交易所账户").classes("text-xl font-bold")
-                    ui.button("连接账户", icon="add", on_click=account_dialog)
+                    with ui.row().classes("items-center gap-3"):
+                        ui.link("API 配置指南 ↗", GUIDE_URL, new_tab=True).classes(
+                            "text-sm text-emerald-700 font-semibold"
+                        ).props('rel="noopener noreferrer"')
+                        ui.button("连接账户", icon="add", on_click=account_dialog)
                 ui.label("同一交易所可以连接多个账户，Bot 绑定到你选择的具体账户。")
                 for account in store.connections():
                     view = runtime.accounts.view(account.id)

@@ -13,3 +13,4 @@ check:
 
 docs-check:
 	uv run python scripts/check_docs.py
+	uv run python scripts/export_account_guide.py --check

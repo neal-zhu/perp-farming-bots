@@ -40,7 +40,7 @@ The application does not automatically register users, bind referral codes or cr
 ## Your first bot
 
 1. Start the application using the installation steps below.
-2. Create a trading API key on your venue and connect the account in **账户实例** (Accounts).
+2. Create a trading API key on your venue and connect the account in **账户实例** (Accounts). Open **API 配置指南** there, or follow the [illustrated API setup guide](docs/api-setup.zh-CN.md) for each venue's steps and field mapping.
 3. Choose hedging or grid and enter your accounts, contracts and amounts.
 4. Click **运行** (Run). Saving parameters alone does not start trading.
 5. Review fills, turnover and PnL; use **暂停** (Pause) to retain positions or **平仓** (Close) to close that bot's allocated inventory.
