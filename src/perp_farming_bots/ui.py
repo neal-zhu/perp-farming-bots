@@ -10,9 +10,10 @@ from nicegui.elements.mixins.disableable_element import DisableableElement
 from pydantic import SecretStr, ValidationError
 
 from .bot_styles import BOT_STYLES
-from .bot_widgets import AlertFeed, BotCard, GridBotCard
+from .bot_widgets import AlertFeed, BotCard
 from .formatting import money, stamp
 from .grid_ui import grid_dialog
+from .grid_widgets import GridBotCard
 from .market_ui import MarketSelector
 from .models import (
     PROVIDER_NAMES,

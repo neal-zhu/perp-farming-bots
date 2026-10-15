@@ -11,8 +11,8 @@ from test_account_form import page as page
 from test_grid import grid_bot, grid_market
 
 from perp_farming_bots.api import register_routes
-from perp_farming_bots.bot_widgets import GridBotCard
 from perp_farming_bots.grid_ui import grid_dialog
+from perp_farming_bots.grid_widgets import GridBotCard
 from perp_farming_bots.models import BotCreate, BotState, BotUpdate, GridMarginCapital
 from perp_farming_bots.notifications import Notifications
 from perp_farming_bots.store import fills, operations

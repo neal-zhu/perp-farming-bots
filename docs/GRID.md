@@ -55,6 +55,8 @@ Healthy service restart retains the initialized layout. Interrupted operations q
 
 ## Presentation and verification
 
-The monitor displays current price, nearest buy/sell triggers and distances. Red/green rows are conditional sell/buy plans; the blue row is current midpoint. Nearby rows are shown by default, with an all-lines toggle. Uninitialized configurations do not display generated lines. Polling preserves rows, visibility and unsaved forms.
+The grid overview leads with trading PnL and configured collateral budget, then separates realized price PnL, unrealized PnL and fees. Trading PnL excludes actual funding; its percentage divides by the current configured budget and changes if that budget is edited. The budget is not native used/isolated collateral. Range, grid count, per-grid quantity, owned inventory, entry price and turnover remain separate fields. No matched-pair profit, matched-cycle count, liquidation price or risk score is inferred. Unknown money and unpublished/uninitialized values remain explicit.
+
+The monitor keeps current price, nearest buy/sell triggers and distances visible. The grid plan is collapsed initially. Expanded red/green rows are conditional sell/buy plans; the blue row is current midpoint. Nearby rows appear by default, with an all-lines toggle. Uninitialized configurations do not display generated lines. Polling preserves expansion, rows, visibility and unsaved forms.
 
 Tests: [grid execution](../tests/test_grid.py), [unfilled IOC recovery](../tests/test_grid_unfilled.py), [startup](../tests/test_grid_startup.py), [preflight](../tests/test_grid_preflight.py), [reuse and edits](../tests/test_grid_reuse.py), [quote outages](../tests/test_grid_quotes.py), [strategy presentation](../tests/test_strategy_widgets.py). Reuse evidence and notices: [grid research](research/grid.md), [UPSTREAMS.md](../UPSTREAMS.md).

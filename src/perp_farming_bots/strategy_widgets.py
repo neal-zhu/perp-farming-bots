@@ -111,7 +111,8 @@ class StrategyMonitor:
             else "尚未运行"
         )
         self.health.classes(
-            replace="pfb-monitor-health" + (" pfb-monitor-health--live" if active and alive and not retrying else "")
+            replace="pfb-monitor-health"
+            + (" pfb-monitor-health--live" if active and alive and not retrying else "")
         )
 
 
@@ -128,34 +129,36 @@ class GridLine:
 
 class GridMonitor(StrategyMonitor):
     def __init__(self):
-        super().__init__("网格计划", "价格触发交易 · 需程序在线", ("当前价格", "下一格买入", "下一格卖出"))
+        super().__init__("下一次交易", "价格触发交易 · 需程序在线", ("当前价格", "下一格买入", "下一格卖出"))
         self.values[0].tooltip("盘口中价仅用于定位；买入按可成交卖价、卖出按可成交买价检查触发。")
         self.root.classes("pfb-grid-monitor")
         self.cursor: int | None = None
         self.rows: dict[int, GridLine] = {}
         with self.root:
-            with ui.element("div").classes("pfb-wall-toolbar"):
-                self.inventory = ui.label().classes("pfb-grid-inventory")
-                self.show_all = (
-                    ui.switch("全部格线", value=False, on_change=lambda: self.filter_rows())
-                    .props("dense size=xs")
-                    .classes("pfb-wall-toggle")
-                )
-            self.native_margin = ui.label().classes("pfb-monitor-caption")
-            self.empty = ui.label("运行后显示实际格线和每格数量").classes("pfb-monitor-empty")
-            self.wall = ui.element("div").classes("pfb-grid-wall")
-            with self.wall:
-                with ui.element("div").classes("pfb-grid-wall-head"):
-                    for text in ("触发价格", "策略动作", "每次数量", "状态"):
-                        ui.label(text)
-                self.lines = ui.element("div").classes("pfb-grid-lines")
-                with self.lines:
-                    self.ticker = ui.element("div").classes("pfb-grid-ticker")
-                    with self.ticker:
-                        ui.icon("my_location", size="16px")
-                        self.ticker_price = ui.label()
-                        self.ticker_hint = ui.label().classes("pfb-grid-ticker-hint")
-            self.wall.tooltip("格线为程序内交易计划，未在交易所提前挂单；每次确认成交后推进到相邻格线。")
+            self.plan = ui.expansion("格线计划", value=False).classes("w-full pfb-grid-plan").props("dense")
+            with self.plan:
+                with ui.element("div").classes("pfb-wall-toolbar"):
+                    self.inventory = ui.label().classes("pfb-grid-inventory")
+                    self.show_all = (
+                        ui.switch("全部格线", value=False, on_change=lambda: self.filter_rows())
+                        .props("dense size=xs")
+                        .classes("pfb-wall-toggle")
+                    )
+                self.native_margin = ui.label().classes("pfb-monitor-caption")
+                self.empty = ui.label("运行后显示实际格线和每格数量").classes("pfb-monitor-empty")
+                self.wall = ui.element("div").classes("pfb-grid-wall")
+                with self.wall:
+                    with ui.element("div").classes("pfb-grid-wall-head"):
+                        for text in ("触发价格", "策略动作", "每次数量", "状态"):
+                            ui.label(text)
+                    self.lines = ui.element("div").classes("pfb-grid-lines")
+                    with self.lines:
+                        self.ticker = ui.element("div").classes("pfb-grid-ticker")
+                        with self.ticker:
+                            ui.icon("my_location", size="16px")
+                            self.ticker_price = ui.label()
+                            self.ticker_hint = ui.label().classes("pfb-grid-ticker-hint")
+                self.wall.tooltip("格线为程序内交易计划，未在交易所提前挂单；每次确认成交后推进到相邻格线。")
 
     def filter_rows(self):
         for index, row in self.rows.items():
@@ -336,7 +339,7 @@ class GridMonitor(StrategyMonitor):
             nearest = abs(index - cursor) == 1
             row.root.classes(
                 remove="pfb-grid-line--buy pfb-grid-line--sell pfb-grid-line--cursor pfb-grid-line--next",
-                add=f"pfb-grid-line--{side}" + (" pfb-grid-line--next" if nearest else "")
+                add=f"pfb-grid-line--{side}" + (" pfb-grid-line--next" if nearest else ""),
             )
             row.root.style(f"order: {(len(levels) - 1 - index) * 2}")
             row.price.set_text(money(price))
@@ -407,7 +410,8 @@ class HedgeMonitor(StrategyMonitor):
         self.values[2].set_text(money(p.target_usd))
         self.hints[2].set_text(
             f"多 {preview.long_quantity} {p.long_symbol} · 空 {preview.short_quantity} {p.short_symbol}"
-            if preview else "两腿分别按金额和原生精度确定数量"
+            if preview
+            else "两腿分别按金额和原生精度确定数量"
         )
         cycle = store.cycle(bot.id)
         positions = store.positions(bot.id)
