@@ -22,6 +22,7 @@ from .models import (
     BotUpdate,
     GridParameters,
     HedgeParameters,
+    InsufficientLiquidity,
     MarketSpec,
     OrderIntent,
     OrderResult,
@@ -428,8 +429,8 @@ class Runtime:
             midpoint = (book.bids[0].price + book.asks[0].price) / 2
             if not grid_bounds[0] <= midpoint <= grid_bounds[1]:
                 raise GridPriceChanged("下单前价格已离开网格区间，未提交订单")
+        executable = book.vwap(side, quantity)
         if trigger_price is not None:
-            executable = book.vwap(side, quantity)
             if (side == "buy" and executable > trigger_price) or (
                 side == "sell" and executable < trigger_price
             ):
@@ -547,6 +548,10 @@ class Runtime:
                 if transient_read(exc):
                     self.retry_read(bot, exc)
                     return False
+                if isinstance(exc, InsufficientLiquidity):
+                    self.read_recovered(bot_id)
+                    self.store.set_state(bot_id, BotState.WAITING, f"{exc}，等待盘口恢复")
+                    return False
                 self.store.set_state(bot_id, BotState.WAITING, str(exc))
                 self.store.alert(str(exc), bot_id, "warning")
                 return False
@@ -577,11 +582,15 @@ class Runtime:
                 if second.quantity != short_quantity:
                     raise ValueError("做空腿未完成计划数量，需要处理；不会自动追加或止损")
             except Exception as exc:
-                if transient_read(exc) and not any(
+                if (transient_read(exc) or isinstance(exc, InsufficientLiquidity)) and not any(
                     o["operation_id"] == op_id for o in self.store.bot_orders(bot.id)
                 ):
                     self.store.skip_unsent_open(bot.id, op_id, str(exc))
-                    self.retry_read(bot, exc)
+                    if isinstance(exc, InsufficientLiquidity):
+                        self.read_recovered(bot_id)
+                        self.store.set_state(bot_id, BotState.WAITING, f"{exc}，等待盘口恢复")
+                    else:
+                        self.retry_read(bot, exc)
                     return False
                 message = str(exc) if isinstance(exc, ValueError) else "执行失败，请同步原订单和实际持仓"
                 self.store.finish_operation(
@@ -651,15 +660,19 @@ class Runtime:
             if self.store.positions(bot.id):
                 raise ValueError("本次平仓未完全成交，保留剩余分配数量，可再次点击平仓")
         except Exception as exc:
-            if transient_read(exc) and not any(
+            if (transient_read(exc) or isinstance(exc, InsufficientLiquidity)) and not any(
                 o["operation_id"] == op_id for o in self.store.bot_orders(bot.id)
             ):
                 self.store.finish_operation(op_id, "skipped", str(exc))
                 if reopen:
-                    self.retry_read(bot, exc)
+                    if isinstance(exc, InsufficientLiquidity):
+                        self.read_recovered(bot.id)
+                        self.store.set_state(bot.id, bot.state, f"定期平仓未提交：{exc}，等待盘口恢复")
+                    else:
+                        self.retry_read(bot, exc)
                 else:
-                    self.store.set_state(bot.id, BotState.PAUSED, f"平仓未提交，连接暂不可用：{exc}")
-                    self.store.alert(f"{bot.name}：平仓未提交，请连接恢复后再次平仓", bot.id, "warning")
+                    self.store.set_state(bot.id, BotState.PAUSED, f"平仓未提交：{exc}；请恢复后再次平仓")
+                    self.store.alert(f"{bot.name}：平仓未提交，请恢复后再次平仓", bot.id, "warning")
                 return
             message = str(exc) if isinstance(exc, ValueError) else "平仓执行失败，请同步订单"
             self.store.finish_operation(

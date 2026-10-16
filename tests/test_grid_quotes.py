@@ -10,7 +10,7 @@ from test_grid import grid_bot, grid_market
 
 from perp_farming_bots.grid import GridPriceChanged
 from perp_farming_bots.markets import Markets, QuoteUnavailable, VenueRequestError
-from perp_farming_bots.models import BotState
+from perp_farming_bots.models import BotState, InsufficientLiquidity
 from perp_farming_bots.store import alerts, operations, positions
 from perp_farming_bots.strategy_widgets import GridMonitor, observe_strategy
 
@@ -292,7 +292,7 @@ async def test_repeated_stale_reads_deduplicate_notifications_and_pause_prevents
     assert store.bot(bot.id).state == BotState.PAUSED and adapter.sent == []
 
 
-@pytest.mark.parametrize("failure", [QuoteUnavailable, GridPriceChanged])
+@pytest.mark.parametrize("failure", [QuoteUnavailable, GridPriceChanged, InsufficientLiquidity])
 async def test_quote_error_after_confirmed_fill_never_discards_journal_or_replays_order(env, monkeypatch, failure):
     store, runtime, account, _ = env
     _, adapter = await grid_market(runtime, account, monkeypatch)

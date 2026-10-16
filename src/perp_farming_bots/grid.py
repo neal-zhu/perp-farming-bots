@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .hummingbot_grid import linear
 from .markets import require_fresh_book
-from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, StrictModel
+from .models import Bot, BotCreate, BotState, BotUpdate, GridParameters, InsufficientLiquidity, StrictModel
 from .store import operations
 
 if TYPE_CHECKING:
@@ -297,17 +297,16 @@ class Grid:
                 r.read_recovered(bot.id)
                 return True
             except Exception as exc:
-                if isinstance(exc, GridPriceChanged):
-                    if op_id is None:
-                        self._fail(bot.id, op_id, exc)
-                        return False
-                    try:
-                        r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
-                    except ValueError as guard_error:
-                        self._fail(bot.id, op_id, guard_error)
-                        return False
+                if isinstance(exc, (GridPriceChanged, InsufficientLiquidity)):
+                    if op_id is not None:
+                        try:
+                            r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
+                        except ValueError as guard_error:
+                            self._fail(bot.id, op_id, guard_error)
+                            return False
                     r.read_recovered(bot.id)
-                    r.store.set_state(bot.id, bot.state, f"{exc}，继续等待价格触发")
+                    waiting = "等待盘口恢复" if isinstance(exc, InsufficientLiquidity) else "继续等待价格触发"
+                    r.store.set_state(bot.id, bot.state, f"{exc}，{waiting}")
                 elif transient_read(exc):
                     if op_id is not None:
                         try:

@@ -272,6 +272,10 @@ class Bot(BotCreate):
     updated_at: float
 
 
+class InsufficientLiquidity(ValueError):
+    """No executable quote exists for the requested size; no price is invented."""
+
+
 class Level(StrictModel):
     price: Decimal = Field(gt=0)
     quantity: Decimal = Field(gt=0)
@@ -306,7 +310,7 @@ class Book(StrictModel):
             remaining -= take
             if remaining == 0:
                 return cost / quantity
-        raise ValueError("所需数量超出当前盘口深度")
+        raise InsufficientLiquidity("所需数量超出当前盘口深度")
 
     def limit_price(self, side: str, quantity: Decimal) -> Decimal:
         remaining = quantity
@@ -314,7 +318,7 @@ class Book(StrictModel):
             remaining -= min(level.quantity, remaining)
             if remaining == 0:
                 return level.price
-        raise ValueError("所需数量超出当前盘口深度")
+        raise InsufficientLiquidity("所需数量超出当前盘口深度")
 
 
 class MarketSpec(StrictModel):

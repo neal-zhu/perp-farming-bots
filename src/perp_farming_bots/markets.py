@@ -14,7 +14,7 @@ import truststore
 from pydantic import ValidationError
 from websockets.asyncio.client import connect
 
-from .models import PROVIDER_NAMES, Book, FundingSnapshot, Level, MarketSpec, Provider
+from .models import PROVIDER_NAMES, Book, FundingSnapshot, InsufficientLiquidity, Level, MarketSpec, Provider
 
 HOSTS = {
     Provider.ARCUS: "https://api.arcus.xyz",
@@ -280,18 +280,24 @@ class Markets:
                     bids = [(x["price"], x["remaining_base_amount"]) for x in r["bids"]]
                     asks = [(x["price"], x["remaining_base_amount"]) for x in r["asks"]]
                     received_at = time.time()
+                bid_levels = sorted(
+                    [Level(price=x[0], quantity=x[1]) for x in bids if Decimal(x[1]) > 0],
+                    key=lambda x: x.price,
+                    reverse=True,
+                )
+                ask_levels = sorted(
+                    [Level(price=x[0], quantity=x[1]) for x in asks if Decimal(x[1]) > 0],
+                    key=lambda x: x.price,
+                )
+                if not bid_levels or not ask_levels:
+                    raise InsufficientLiquidity(f"{symbol} 盘口暂时没有双边报价")
+                if bid_levels[0].price >= ask_levels[0].price:
+                    raise QuoteUnavailable(f"{symbol} 盘口价格交叉，等待新快照")
                 book = Book(
                     provider=provider,
                     symbol=symbol,
-                    bids=sorted(
-                        [Level(price=x[0], quantity=x[1]) for x in bids if Decimal(x[1]) > 0],
-                        key=lambda x: x.price,
-                        reverse=True,
-                    ),
-                    asks=sorted(
-                        [Level(price=x[0], quantity=x[1]) for x in asks if Decimal(x[1]) > 0],
-                        key=lambda x: x.price,
-                    ),
+                    bids=bid_levels,
+                    asks=ask_levels,
                     received_at=received_at,
                     source=f"{PROVIDER_NAMES[provider]} 官方盘口",
                 )

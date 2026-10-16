@@ -58,6 +58,8 @@ Connections keep encrypted private configuration outside public account response
 
 Transport repeats only approved reads: GET and Entropy POST `/info`. Signed writes are single-send. Transient preflight read failures preserve the active state; continuous failures pause after five minutes. The outage timestamp is in process memory, so restart begins a new observation window. Manually paused bots do not auto-resume.
 
+`InsufficientLiquidity` identifies a known empty book side or insufficient displayed depth for the full quantity. Grid actions and hedge entry wait only before any order journal; scheduled closes retain their schedule under the same guard. These conditions do not consume the read-outage window. Final execution quotes check full-quantity depth before preparing an order. Malformed payloads and identity mismatches remain validation failures; a crossed book is `QuoteUnavailable` rather than executable data.
+
 Once an order journal exists, an exception must use original-order recovery rather than the unsent-operation path. Startup marks interrupted operations unknown and queries originals. A late fill can update evidence and inventory, but does not manufacture a second leg or authorize a new cycle. Margin changes similarly confirm by native read-back, with no resubmission or automatic resume.
 
 The runtime runs independently of a browser connection. Points samples and notification delivery have their own tasks. UI polling updates existing elements; it must preserve unsaved forms, scroll and grid viewing choices.
