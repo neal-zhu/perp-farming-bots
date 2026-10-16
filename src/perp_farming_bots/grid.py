@@ -14,6 +14,10 @@ if TYPE_CHECKING:
     from .runtime import Runtime
 
 
+class GridPriceChanged(ValueError):
+    """The price condition ceased to hold before an order was journaled."""
+
+
 class GridPreview(StrictModel):
     source: str
     levels: list[Decimal]
@@ -293,7 +297,18 @@ class Grid:
                 r.read_recovered(bot.id)
                 return True
             except Exception as exc:
-                if transient_read(exc):
+                if isinstance(exc, GridPriceChanged):
+                    if op_id is None:
+                        self._fail(bot.id, op_id, exc)
+                        return False
+                    try:
+                        r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
+                    except ValueError as guard_error:
+                        self._fail(bot.id, op_id, guard_error)
+                        return False
+                    r.read_recovered(bot.id)
+                    r.store.set_state(bot.id, bot.state, f"{exc}，继续等待价格触发")
+                elif transient_read(exc):
                     if op_id is not None:
                         try:
                             r.store.skip_unsent_grid_action(bot.id, op_id, str(exc))
@@ -332,6 +347,9 @@ class Grid:
             "attention",
         }:
             try:
+                if not any(order["operation_id"] == latest["id"] for order in r.store.bot_orders(bot_id)):
+                    r.store.skip_unsent_grid_action(bot_id, latest["id"], latest["message"], recovered=True)
+                    return
                 if r.store.skip_unfilled_grid_action(bot_id, latest["id"], recovered=True):
                     return
                 r.store.complete_grid_action(bot_id, latest["id"], recovered=True)

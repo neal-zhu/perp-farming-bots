@@ -356,7 +356,8 @@ async def test_last_quote_leaving_range_blocks_initial_order(env, monkeypatch):
     await runtime.command(bot.id, "run")
     assert not await runtime.grid.tick(bot.id)
     assert adapter.sent == [] and store.bot_orders(bot.id) == []
-    assert store.bot(bot.id).state == BotState.ATTENTION
+    assert store.bot(bot.id).state == BotState.WAITING
+    assert store.grid_state(bot.id) is None and not store.bot_pending(bot.id)
 
 
 async def test_actual_grid_create_form_validates_inline_and_saves_without_orders(page, env):

@@ -41,6 +41,8 @@ From cursor `k`:
 
 Prices are bounded by configured slippage, native precision, the trigger line and the grid range. These are **IOC orders sent after a program-side trigger**, not resting exchange orders. The shared executor journals before sending and queries the original identity. Cursor progression requires the complete target inventory and applied native evidence. Partial or unknown results do not advance the cursor or automatically submit a replacement order.
 
+The final pre-submission quote can invalidate a trigger or move outside the range. If no order was journaled, that action is recorded as skipped, while the cursor and actual inventory stay unchanged. The grid continues waiting and evaluates fresh conditions on a later tick; price movement does not count as an order failure or a connection outage. Any existing order journal blocks this skip, regardless of whether an acknowledgement was received.
+
 A terminal IOC cancellation with confirmed zero fills leaves an initialized grid's cursor, levels and inventory unchanged. Its order and operation records remain, and a later eligible tick checks fresh prices/account state and creates a new client order ID. The canceled request is never replayed. Arcus's explicit `REJECTED / IOC_CANCELED` response is treated as this cancellation; other rejections still pause for review. A zero-fill startup cancellation discards only the uncommitted layout and waits to initialize again. Synchronizing an interrupted order that proves canceled with zero fills pauses for explicit Run before any new execution.
 
 After a complete fill, the cursor moves to the executed line; the neighboring line in the opposite direction becomes the next potential reversal. Repeated price oscillations can continue increasing and reducing inventory. The grid range does not move with price. Outside the range, positions remain and new grid actions wait.
@@ -52,6 +54,8 @@ The grid exclusively reserves its native account/symbol. External positions or o
 Flat paused/closed grids without unresolved operations can change direction, bounds, grid count, startup choice and capital. Historical orders lock account/symbol bindings. Save revalidates and clears only the current layout, with no trade; name/slippage-only edits preserve it.
 
 Healthy service restart retains the initialized layout. Interrupted operations query original identities; recovered complete evidence pauses for explicit user resumption. An unsent operation can be skipped only if it has no order journal. Temporary native read failures retry; five minutes of continuous unavailability pauses the bot. Unknown writes remain in original-order recovery.
+
+Synchronization also distinguishes an interrupted action with no order journal from an incomplete fill. It preserves the operation record, verifies the existing initialized layout against owned inventory (or discards only an uncommitted, empty startup layout), and pauses for explicit Run. It does not compare the unsubmitted next target against current inventory or submit a replacement. Native inventory and account settings are checked again on Run.
 
 ## Presentation and verification
 

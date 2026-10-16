@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from .grid import Grid, GridPreview
+from .grid import Grid, GridPreview, GridPriceChanged
 from .margin import Margin
 from .markets import Markets, QuoteUnavailable, VenueRequestError, require_fresh_book
 from .models import (
@@ -427,13 +427,13 @@ class Runtime:
         if grid_bounds is not None:
             midpoint = (book.bids[0].price + book.asks[0].price) / 2
             if not grid_bounds[0] <= midpoint <= grid_bounds[1]:
-                raise ValueError("下单前价格已离开网格区间，未提交订单")
+                raise GridPriceChanged("下单前价格已离开网格区间，未提交订单")
         if trigger_price is not None:
             executable = book.vwap(side, quantity)
             if (side == "buy" and executable > trigger_price) or (
                 side == "sell" and executable < trigger_price
             ):
-                raise ValueError("价格已离开触发格线，未提交订单；请核实后恢复")
+                raise GridPriceChanged("价格已离开触发格线，未提交订单")
         slippage = bot.parameters.slippage_bps / 10000
         raw = reference_price * (1 + slippage if side == "buy" else 1 - slippage)
         price = bounded_price(raw, spec, side)

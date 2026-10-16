@@ -670,8 +670,10 @@ class Store:
             )
         return op_id
 
-    def skip_unsent_grid_action(self, bot_id: str, op_id: str, reason: str) -> None:
-        """Only a pending action with no order journal can be skipped and retried."""
+    def skip_unsent_grid_action(self, bot_id: str, op_id: str, reason: str, *, recovered: bool = False) -> None:
+        """Retain an unsent action; recovered actions pause for explicit Run."""
+        from .grid import target_quantity
+
         with self.transaction() as db:
             op = db.execute(select(operations).where(operations.c.id == op_id)).mappings().one()
             action = (
@@ -680,22 +682,35 @@ class Store:
             if (
                 op["bot_id"] != bot_id
                 or action["bot_id"] != bot_id
-                or op["status"] != "pending"
+                or op["status"] not in ({"pending", "unknown", "attention"} if recovered else {"pending"})
                 or op["kind"] not in {"grid_initial", "grid_step"}
                 or db.execute(select(orders.c.id).where(orders.c.operation_id == op_id)).first() is not None
             ):
                 raise ValueError("本次操作已有订单日志或状态不符，请核实原订单，不能自动重试")
             state = db.execute(select(grid_states).where(grid_states.c.bot_id == bot_id)).mappings().one()
+            owned = list(db.execute(select(positions).where(positions.c.bot_id == bot_id)).mappings())
             if op["kind"] == "grid_initial":
-                if (
-                    state["initialized"]
-                    or db.execute(select(positions).where(positions.c.bot_id == bot_id)).first()
-                ):
+                if state["initialized"] or owned:
                     raise ValueError("初始化已有确认状态或仓位，不能自动重试")
                 db.execute(delete(grid_states).where(grid_states.c.bot_id == bot_id))
-            elif not state["initialized"]:
-                raise ValueError("原网格尚未确认，不能自动重试")
+            else:
+                p = self.bot(bot_id).parameters
+                assert isinstance(p, GridParameters)
+                quantity = sum(
+                    (Decimal(row["quantity"]) * (1 if row["role"] == "long" else -1) for row in owned),
+                    Decimal(0),
+                )
+                if (
+                    not state["initialized"] or len(owned) > 1
+                    or quantity != target_quantity(
+                        p, state["cursor"], Decimal(state["quantity_per_grid"]), state["zero_inventory_cursor"]
+                    )
+                    or any(row["connection_id"] != p.connection_id or row["symbol"] != p.symbol for row in owned)
+                ):
+                    raise ValueError("原网格仓位与格线状态不符，不能跳过本次操作")
             self.finish_operation(op_id, "skipped", f"未创建订单，跳过本次操作：{reason}", db)
+            if recovered:
+                self.set_state(bot_id, BotState.PAUSED, "已确认本次操作未提交订单；保留仓位，点击运行继续", db)
 
     def skip_unfilled_grid_action(self, bot_id: str, op_id: str, *, recovered: bool = False) -> bool:
         """Retain the terminal zero-fill journal and original cursor, never replay it."""
